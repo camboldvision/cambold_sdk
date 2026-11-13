@@ -382,6 +382,11 @@ class SdkImpl
         auto frame = make_frame(type, payload, payload_size, request_id);
         {
             std::lock_guard<std::mutex> lock(control_tx_mutex_);
+#ifndef CB_SDK_LOCAL
+            if (type == CB_IMU_STREAM_SET_REQ && payload_size && payload && payload[0] &&
+                slam_ && slam_->imu_blocked())
+                return -EBUSY;
+#endif
             if (control_tx_.size() >= kControlQueueLimit)
                 return -EAGAIN;
             control_tx_.push_back(std::move(frame));

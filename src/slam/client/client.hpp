@@ -7,13 +7,15 @@
 #include <functional>
 #include <memory>
 #include <thread>
+#include <utility>
 
 namespace cambold::detail
 {
 class Client
 {
   public:
-    Client() = default;
+    using ReplyObserver = std::function<void(const svio::Frame &, const svio::Json &)>;
+    explicit Client(ReplyObserver observer = {}) : observer_(std::move(observer)) {}
     ~Client()
     {
         stop();
@@ -34,6 +36,7 @@ class Client
     void live(std::string label, TransportFactory factory);
     void enqueue(std::uint16_t type, svio::Json body);
     Scene scene_;
+    ReplyObserver observer_;
     std::atomic<bool> stopping_{false};
     std::thread thread_;
     std::mutex commands_mutex_;

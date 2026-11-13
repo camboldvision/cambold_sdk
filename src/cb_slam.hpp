@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
+#include "cb_protocol.h"
 #include "client/client.hpp"
 #include "slam_envelope.hpp"
 #include <cerrno>
@@ -14,7 +15,9 @@ class CbSlam
   public:
     using Send = std::function<int(std::uint16_t, const std::uint8_t *, std::size_t)>;
     CbSlam(Send send, std::function<bool()> ready)
-        : send_(std::move(send)), ready_(std::move(ready))
+        : send_(std::move(send)), ready_(std::move(ready)),
+          client_([this](const svio::Frame &frame, const svio::Json &json)
+                  { update_imu_policy(frame, json); })
     {
     }
     ~CbSlam()
@@ -35,6 +38,9 @@ class CbSlam
         ++generation_;
         inbox_.clear();
         bytes_ = 0;
+        dense_running_ = start_pending_ = false;
+        start_request_ = 0;
+        start_operation_.clear();
         cv_.notify_all();
     }
     void receive(const std::uint8_t *data, std::size_t n)
@@ -66,15 +72,18 @@ class CbSlam
     }
     bool imu_blocked() const
     {
+#ifdef CB_SDK_LOCAL
+        return false;
+#else
         std::lock_guard<std::mutex> lock(mutex_);
-        return imu_blocked_;
+        return dense_running_ || start_pending_;
+#endif
     }
     void link_status(const std::uint8_t *p, std::size_t n)
     {
         if (n >= 3)
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            imu_blocked_ = p[2] == 0;
             if (!p[0] && active_)
             {
                 active_ = false;
@@ -87,6 +96,77 @@ class CbSlam
     }
 
   private:
+    // The USB SDK owns its bandwidth policy. LOCAL clients never change their
+    // IMU subscriptions when another application starts dense reconstruction.
+    void before_request(const svio::Frame &frame)
+    {
+#ifndef CB_SDK_LOCAL
+        if (frame.type != svio::Command || frame.flags != svio::json_flag)
+            return;
+        const auto json = svio::parse_json(frame);
+        if (json.value("command", std::string()) != "START" ||
+            !json.value("args", svio::Json::object()).value("dense_reconstruction", true))
+            return;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (start_pending_ && start_request_ == frame.request_id)
+                return; // Retry of the same idempotent command.
+            start_pending_ = true;
+            start_request_ = frame.request_id;
+            start_operation_.clear();
+        }
+        disable_imu();
+#endif
+    }
+    void disable_imu()
+    {
+#ifndef CB_SDK_LOCAL
+        const std::uint8_t off = 0;
+        if (send_(CB_IMU_STREAM_SET_REQ, &off, 1))
+            throw std::runtime_error("Cannot disable USB IMU upload for dense reconstruction");
+#endif
+    }
+    void update_imu_policy(const svio::Frame &frame, const svio::Json &json)
+    {
+#ifndef CB_SDK_LOCAL
+        bool disable = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const bool was_blocked = dense_running_ || start_pending_;
+            if (frame.type == svio::HelloReply || frame.type == svio::StatusReply ||
+                frame.type == svio::StatusEvent || frame.type == svio::EpochEvent)
+            {
+                const auto state = json.value("state", std::string());
+                const bool active = state == "CONFIGURING_CAMERA" || state == "STARTING" ||
+                                    state == "INITIALIZING" || state == "RUNNING" || state == "STOPPING";
+                dense_running_ = active && json.value("dense_reconstruction", false);
+                if (active || state == "ERROR" || state == "WAITING_CALIBRATION")
+                    start_pending_ = false;
+            }
+            if (start_pending_ && frame.request_id == start_request_)
+            {
+                if (frame.type == svio::CommandReply)
+                    start_operation_ = json.value("operation_id", std::string());
+                else if (frame.type == svio::Error)
+                    start_pending_ = false;
+            }
+            if (start_pending_ && (frame.type == svio::OperationEvent || frame.type == svio::OperationReply) &&
+                (frame.request_id == start_request_ ||
+                 (!start_operation_.empty() && json.value("operation_id", std::string()) == start_operation_)))
+            {
+                const auto status = json.value("status", std::string());
+                if (status == "completed" || status == "failed")
+                {
+                    start_pending_ = false;
+                    dense_running_ = status == "completed";
+                }
+            }
+            disable = !was_blocked && (dense_running_ || start_pending_);
+        }
+        if (disable)
+            disable_imu();
+#endif
+    }
     class Transport final : public svio::Transport
     {
         CbSlam &owner_;
@@ -150,6 +230,7 @@ class CbSlam
             }
             for (auto &f : decoder_.feed(p, n))
             {
+                owner_.before_request(f);
                 auto record = cambold_ipc::pack_slam(
                     {f.type, f.flags, f.request_id, f.timestamp_ns, std::move(f.payload)});
                 if (owner_.send_(cambold_ipc::slam_packet, record.data(), record.size()))
@@ -170,6 +251,9 @@ class CbSlam
                     disable = true;
                     owner_.inbox_.clear();
                     owner_.bytes_ = 0;
+                    owner_.dense_running_ = owner_.start_pending_ = false;
+                    owner_.start_request_ = 0;
+                    owner_.start_operation_.clear();
                 }
             }
             generation_ = 0;
@@ -204,6 +288,8 @@ class CbSlam
     std::deque<svio::Bytes> inbox_;
     std::size_t bytes_ = 0;
     std::uint64_t generation_ = 0;
-    bool active_ = false, imu_blocked_ = false;
+    bool active_ = false, dense_running_ = false, start_pending_ = false;
+    std::uint32_t start_request_ = 0;
+    std::string start_operation_;
     cambold::detail::Client client_;
 };

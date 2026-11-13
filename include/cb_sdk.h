@@ -277,6 +277,8 @@ extern "C"
     int cb_slam_stop(cb_t *);
     int cb_slam_refresh_maps(cb_t *);
     int cb_slam_subscribe(cb_t *, int preview, int map);
+    /* USB: nonzero during dense SLAM, and enabling IMU returns -EBUSY.
+       LOCAL: always zero; dense reconstruction does not limit IMU delivery. */
     int cb_slam_imu_upload_blocked(cb_t *);
     typedef struct cb_slam_pose
     {
@@ -284,8 +286,10 @@ extern "C"
         uint32_t epoch;
         float position[3], quaternion_xyzw[4], velocity[3];
     } cb_slam_pose;
-    /* Latest valid pose, map frame / Hamilton XYZW. Non-consuming; -EAGAIN
-       before a valid pose or while disconnected. */
+    /* Latest valid pose, map frame / Hamilton XYZW. Updated at 200 Hz after
+       initialization (and map alignment in resume/localization). Non-consuming;
+       compare timestamp_monotonic_ns when polling. -EAGAIN before a valid pose
+       or while disconnected. */
     int cb_slam_get_pose(cb_t *, cb_slam_pose *);
     /* JSON contains state, pose, descriptors and map_catalog. get_json does not
        consume updates. poll_json additionally returns images and incremental

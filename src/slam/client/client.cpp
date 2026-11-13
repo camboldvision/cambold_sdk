@@ -19,7 +19,7 @@ svio::Json subscriptions(bool images, bool dense, double budget)
     for (auto id : svio::active_streams)
         streams.push_back({{"name", svio::stream_name(id)},
                            {"enabled", id == 1 || id == 3 || (id == 9 ? dense : id == 7 && images)},
-                           {"max_hz", id == 1   ? 60
+                           {"max_hz", id == 1   ? svio::pose_max_hz
                                       : id == 2 ? 200
                                       : id == 3 ? 1
                                       : id == 9 ? 1
@@ -238,6 +238,8 @@ void Client::live(std::string port, TransportFactory factory)
                     }
                     if (frame.request_id)
                         pending.erase(frame.request_id);
+                    if (observer_ && frame.flags == svio::json_flag)
+                        observer_(frame, json);
                     if (frame.type == svio::CommandReply &&
                         json.value("status", std::string()) == "accepted")
                     {

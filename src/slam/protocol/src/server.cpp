@@ -102,12 +102,6 @@ void Server::state(Json values)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     state_.update(values);
-    if (state_.value("imu_upload_blocked", false))
-    {
-        subscriptions_[2].enabled = false;
-        imu_.clear();
-        data_.erase(2);
-    }
 }
 void Server::descriptor(const std::string &section, Json values)
 {
@@ -144,8 +138,25 @@ void Server::queue_json(std::uint16_t type, Json values, std::uint32_t request)
 void Server::queue_data(std::uint16_t stream, std::deque<Frame> frames)
 {
     const auto now = frames.front().timestamp_ns;
-    dropped_ += data_[stream].size();
-    data_[stream] = std::move(frames);
+    auto &queue = data_[stream];
+    if (stream == 1)
+    {
+        // Preserve IMU-rate poses arriving in a short scheduling burst. Bound
+        // stale history on a slow/disconnected consumer to 100 ms at 200 Hz.
+        constexpr std::size_t pose_queue_limit = pose_max_hz / 10;
+        while (queue.size() + frames.size() > pose_queue_limit && !queue.empty())
+        {
+            queue.pop_front();
+            ++dropped_;
+        }
+        for (auto &frame : frames)
+            queue.push_back(std::move(frame));
+    }
+    else
+    {
+        dropped_ += queue.size();
+        queue = std::move(frames);
+    }
     auto &sub = subscriptions_[stream];
     sub.last = now;
     const auto period = static_cast<std::uint64_t>(1e9 / sub.hz);
@@ -166,8 +177,6 @@ Context Server::context(std::uint16_t stream)
 }
 bool Server::allowed(std::uint16_t stream, std::uint64_t now) const
 {
-    if (stream == 2 && state_.value("imu_upload_blocked", false))
-        return false;
     auto it = subscriptions_.find(stream);
     if (!session_ || it == subscriptions_.end() || !it->second.enabled)
         return false;
@@ -344,9 +353,6 @@ void Server::receive(const Frame &f)
                     throw std::runtime_error("Duplicate stream");
                 auto &sub = replacement[id];
                 sub.enabled = item.at("enabled").get<bool>();
-                if (id == 2 && sub.enabled && state_.value("imu_upload_blocked", false))
-                    throw std::runtime_error(
-                        "IMU_UPLOAD_BLOCKED: dense SLAM reconstruction is active");
                 sub.hz = bounded_hz(item, stream_max_hz(id));
                 auto points = item.value("max_points", 128);
                 if (points < 1 || points > (id == 9   ? int(dense_point_limit)
@@ -585,7 +591,7 @@ void Server::imu(std::uint64_t timestamp, std::uint64_t sequence, const std::arr
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto &sub = subscriptions_[2];
-    if (!session_ || !sub.enabled || state_.value("imu_upload_blocked", false))
+    if (!session_ || !sub.enabled)
         return;
     // Throttle on capture time, not on how quickly the broker queue is drained.
     // A phase accumulator tolerates normal timestamp jitter at the nominal rate.
@@ -761,7 +767,7 @@ void Server::image(ImagePart image, std::uint64_t timestamp)
 void ServerLink::step(Transport &port)
 {
     std::uint8_t bytes[4096];
-    auto count = port.read(bytes, sizeof(bytes), 5);
+    auto count = port.read(bytes, sizeof(bytes), 1);
     rx_bytes += count;
     for (const auto &frame : decoder_.feed(bytes, count))
         server_.receive(frame);

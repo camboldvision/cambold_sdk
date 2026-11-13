@@ -18,9 +18,10 @@ constexpr std::uint16_t json_flag = 1;
 // Keep wire IDs stable; 4, 6 and 8 are retired, never reassigned.
 inline constexpr std::array<std::uint16_t, 6> active_streams{1, 2, 3, 5, 7, 9};
 inline constexpr unsigned preview_max_hz = 15;
+inline constexpr unsigned pose_max_hz = 200;
 constexpr unsigned stream_max_hz(std::uint16_t id)
 {
-    return id == 2 ? 200 : id == 1 ? 60 : id == 3 ? 10 : id == 9 ? 2 : preview_max_hz;
+    return id == 2 ? 200 : id == 1 ? pose_max_hz : id == 3 ? 10 : id == 9 ? 2 : preview_max_hz;
 }
 enum Type : std::uint16_t
 {
