@@ -371,6 +371,14 @@ std::unique_ptr<CbTransport> CbTransport::open(const std::string &requested, boo
     };
 
     auto port = std::unique_ptr<CbTransport>(new CbTransport());
+#ifdef __APPLE__
+    // Capture before claiming either bulk interface. macOS capture terminates
+    // existing USB clients, so capturing when preview starts would break them.
+    std::string capture_error;
+    port->macos_capture_ = CbMacUsbCapture::acquire(false, &capture_error);
+    if (!capture_error.empty())
+        return fail(capture_error);
+#endif
     int rc = libusb_init(&port->context_);
     if (rc != LIBUSB_SUCCESS)
         return fail(usb_error(rc, "libusb_init"));
@@ -487,8 +495,8 @@ std::unique_ptr<CbTransport> CbTransport::open(const std::string &requested, boo
         return fail(usb_error(rc, "libusb_open"));
 
     /* On Linux, auto-detach handles a stale generic USB-serial binding.
-     * On macOS, detaching captures and re-enumerates the entire composite
-     * device, so vendor interfaces must be claimed without auto-detach. */
+     * On macOS the shared lease owns device capture; individual vendor
+     * interfaces must not detach or reattach the composite device. */
 #if defined(__linux__)
     (void)libusb_set_auto_detach_kernel_driver(port->handle_, 1);
 #endif
@@ -626,6 +634,9 @@ void CbTransport::close()
     }
     interface_number_ = -1;
     endpoint_in_ = endpoint_out_ = 0;
+#ifdef __APPLE__
+    macos_capture_.reset();
+#endif
 }
 
 int CbTransport::resize_terminal(uint16_t, uint16_t)

@@ -36,7 +36,7 @@ target_link_libraries(my_camera_app PRIVATE CamBold::SDK)
 
 | 配置 | 运行位置 | 控制、IMU、视差和 SLAM | 图像 |
 | --- | --- | --- | --- |
-| `USB` | Windows、Linux、macOS 电脑 | USB bulk | Windows Media Foundation；Linux/macOS libuvc |
+| `USB` | Windows、Linux、macOS 电脑 | USB bulk | UVC 原始 MJPEG：Windows Media Foundation；Linux/macOS libuvc + libusb |
 | `LOCAL` | 相机内的 Linux 应用 | `/run/soc-camera/sdk.sock` | 采集服务共享内存中的同源 JPEG |
 
 Windows/macOS 默认使用 USB，Linux AArch64 默认使用 LOCAL。Linux AArch64 电脑
@@ -72,6 +72,25 @@ cb_camera_example 10 0 1 1
 不传运行秒数时，按 Ctrl+C 退出。程序打印真实设备名、支持的帧率、数据尺寸、源
 时间戳和曝光时长。开启深度前请准备设备标定和模型。示例不修改投影模式或焦距；
 开启深度可能按当前模式上限降低并保存相机帧率。
+
+### macOS USB 权限
+
+macOS 的 UVC 原始视频采集需要管理员权限。请使用 sudo 启动调用 SDK 的程序：
+
+```sh
+sudo ./build/usb/examples/cb_camera_example 10 1 1 0
+```
+
+SDK 通过 libuvc/libusb 接收 UVC 原始 MJPEG，解析 SCAM APP1 中的板端时间戳、
+帧序号和曝光参数。`cb_video_start` 收到带有效时间戳的首帧后返回成功；无帧或
+元数据无效时返回具体错误。
+
+macOS 的驱动捕获作用于整个复合 USB 设备。捕获期间，MTP、系统相机应用和用户 ACM
+等系统驱动接口可能暂时不可用；最后释放设备时可能发生一次 USB 重新枚举。请先关闭
+其他占用相机的应用。
+
+权限和设备捕获行为参见 [libusb 官方讨论](https://github.com/libusb/libusb/issues/1014) 与
+[Apple USB 捕获说明](https://developer.apple.com/documentation/iousbhost/iousbhostobjectinitoptions/devicecapture)。
 
 ## 接口和数据约定
 

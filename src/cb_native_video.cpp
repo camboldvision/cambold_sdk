@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cerrno>
 #include <cstdio>
-#include <cstring>
 #include <cwctype>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
+#ifdef __APPLE__
+#include "cb_macos_usb_capture.hpp"
+#include <chrono>
+#include <condition_variable>
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -36,20 +39,6 @@ constexpr int kVid = 0x2207;
 constexpr int kPid = 0x0019;
 constexpr unsigned int kWidth = 2160;
 constexpr unsigned int kHeight = 1280;
-
-uint32_t le32(const uint8_t *p)
-{
-    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
-
-uint64_t le64(const uint8_t *p)
-{
-    uint64_t value = 0;
-    for (unsigned int i = 0; i < 8; ++i)
-        value |= static_cast<uint64_t>(p[i]) << (i * 8U);
-    return value;
-}
 
 #ifndef _WIN32
 const char *uvc_error_text(uvc_error_t error)
@@ -253,6 +242,13 @@ struct CbVideoSession::Impl
     uvc_device_t *device = nullptr;
     uvc_device_handle_t *handle = nullptr;
     uvc_stream_ctrl_t stream_ctrl{};
+#ifdef __APPLE__
+    std::shared_ptr<CbMacUsbCapture> macos_capture;
+    std::mutex first_mutex;
+    std::condition_variable first_condition;
+    bool first_received = false;
+    bool invalid_metadata = false;
+#endif
 #else
     IMFSourceReader *reader = nullptr;
     std::thread capture_thread;
@@ -264,6 +260,31 @@ struct CbVideoSession::Impl
     mutable std::mutex mutex;
 
 #ifndef _WIN32
+    void close_uvc_locked()
+    {
+        if (handle)
+        {
+            uvc_stop_streaming(handle);
+            uvc_close(handle);
+            handle = nullptr;
+        }
+        streaming = false;
+        if (device)
+        {
+            uvc_unref_device(device);
+            device = nullptr;
+        }
+        if (context)
+        {
+            uvc_exit(context);
+            context = nullptr;
+        }
+#ifdef __APPLE__
+        // Restore the system driver only after all UVC/bulk handles are closed.
+        macos_capture.reset();
+#endif
+    }
+
     static void frame_callback(uvc_frame_t *frame, void *user)
     {
         auto *self = static_cast<Impl *>(user);
@@ -277,7 +298,23 @@ struct CbVideoSession::Impl
         output.sequence = frame->sequence;
         output.width = frame->width;
         output.height = frame->height;
-        cb_parse_jpeg_metadata(output.jpeg.data(), output.jpeg.size(), &output);
+        const bool metadata = cb_parse_jpeg_metadata(output.jpeg.data(), output.jpeg.size(), &output);
+#ifdef __APPLE__
+        if (!metadata || !(output.flags & 1U) || !output.timestamp_ns ||
+            output.width != kWidth || output.height != kHeight)
+        {
+            std::lock_guard<std::mutex> lock(self->first_mutex);
+            self->invalid_metadata = true;
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(self->first_mutex);
+            self->first_received = true;
+            self->first_condition.notify_all();
+        }
+#else
+        (void)metadata;
+#endif
         if (self->callback)
             self->callback(std::move(output));
     }
@@ -457,12 +494,18 @@ struct CbVideoSession::Impl
             return true;
 
 #ifndef _WIN32
+#ifdef __APPLE__
+        macos_capture = CbMacUsbCapture::acquire(true, error);
+        if (!macos_capture)
+            return false;
+#endif
         uvc_error_t result = uvc_init(&context, nullptr);
         if (result < 0)
         {
             if (error)
                 *error = std::string("uvc_init: ") + uvc_error_text(result);
             context = nullptr;
+            close_uvc_locked();
             return false;
         }
 
@@ -472,8 +515,7 @@ struct CbVideoSession::Impl
             if (error)
                 *error =
                     std::string("UVC camera ") + "2207:0019 not found: " + uvc_error_text(result);
-            uvc_exit(context);
-            context = nullptr;
+            close_uvc_locked();
             return false;
         }
 
@@ -486,18 +528,14 @@ struct CbVideoSession::Impl
                          " (" + std::to_string(static_cast<int>(result)) + ")";
                 if (result == UVC_ERROR_ACCESS || result == UVC_ERROR_BUSY)
                 {
-#if defined(__APPLE__)
-                    *error += "; macOS could not claim the UVC interface; close other camera "
-                              "applications and reconnect the camera";
+#ifdef __APPLE__
+                    *error += "; macOS USB capture succeeded, but claiming the raw UVC interface failed";
 #else
                     *error += "; check USB device permissions and close other camera applications";
 #endif
                 }
             }
-            uvc_unref_device(device);
-            device = nullptr;
-            uvc_exit(context);
-            context = nullptr;
+            close_uvc_locked();
             return false;
         }
 
@@ -507,29 +545,43 @@ struct CbVideoSession::Impl
         {
             if (error)
                 *error = std::string("UVC MJPEG mode unavailable: ") + uvc_error_text(result);
-            uvc_close(handle);
-            handle = nullptr;
-            uvc_unref_device(device);
-            device = nullptr;
-            uvc_exit(context);
-            context = nullptr;
+            close_uvc_locked();
             return false;
         }
 
+#ifdef __APPLE__
+        {
+            std::lock_guard<std::mutex> first_lock(first_mutex);
+            first_received = false;
+            invalid_metadata = false;
+        }
+#endif
         result = uvc_start_streaming(handle, &stream_ctrl, frame_callback, this, 0);
         if (result < 0)
         {
             if (error)
                 *error = std::string("uvc_start_streaming: ") + uvc_error_text(result);
-            uvc_close(handle);
-            handle = nullptr;
-            uvc_unref_device(device);
-            device = nullptr;
-            uvc_exit(context);
-            context = nullptr;
+            close_uvc_locked();
             return false;
         }
         streaming = true;
+#ifdef __APPLE__
+        bool received = false;
+        {
+            std::unique_lock<std::mutex> first_lock(first_mutex);
+            received = first_condition.wait_for(first_lock, std::chrono::seconds(3),
+                                                [this] { return first_received; });
+            if (!received && error)
+                *error = invalid_metadata
+                             ? "UVC JPEG arrived without valid CamBold camera timestamp metadata (SCAM APP1)"
+                             : "No raw UVC MJPEG frame received from libusb within 3 seconds";
+        }
+        if (!received)
+        {
+            close_uvc_locked();
+            return false;
+        }
+#endif
         return true;
 #else
         return start_media_foundation(error);
@@ -564,18 +616,7 @@ struct CbVideoSession::Impl
         com_initialized = false;
 #else
         std::lock_guard<std::mutex> lock(mutex);
-        if (streaming && handle)
-            uvc_stop_streaming(handle);
-        streaming = false;
-        if (handle)
-            uvc_close(handle);
-        handle = nullptr;
-        if (device)
-            uvc_unref_device(device);
-        device = nullptr;
-        if (context)
-            uvc_exit(context);
-        context = nullptr;
+        close_uvc_locked();
 #endif
     }
 };

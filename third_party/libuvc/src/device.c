@@ -1000,10 +1000,8 @@ uvc_error_t uvc_claim_if(uvc_device_handle_t *devh, int idx) {
   }
 
 #if defined(__APPLE__)
-  /* Darwin detaches drivers by capturing and re-enumerating the entire USB
-   * device. An unconditional detach requires elevated privileges even when
-   * this interface is free, and interrupts the camera's other interfaces.
-   * Claim only the requested UVC interface without capturing the device. */
+  /* The SDK's shared capture lease detaches the macOS driver before opening
+   * any UVC or vendor interface. Do not capture the composite device again. */
   ret = libusb_claim_interface(devh->usb_devh, idx);
   if (ret == UVC_SUCCESS)
     devh->claimed |= ( 1 << idx );

@@ -6,6 +6,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#ifdef __APPLE__
+#include "cb_macos_usb_capture.hpp"
+#endif
 
 /* A small byte-stream adapter over one vendor-specific USB interface.  The
  * board's generic serial gadget exposes exactly one bulk-IN and one bulk-OUT
@@ -53,6 +56,9 @@ class CbTransport
     std::string device_name_;
     int local_fd_ = -1;
     int child_pid_ = -1;
+#ifdef __APPLE__
+    std::shared_ptr<CbMacUsbCapture> macos_capture_;
+#endif
 #ifdef _WIN32
     void *winusb_file_ = nullptr;
     void *winusb_handle_ = nullptr;
