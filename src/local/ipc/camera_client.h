@@ -48,7 +48,7 @@ extern "C"
     int camera_client_read_latest_rgb(camera_client_t *client, int camera_index,
                                       struct camera_client_frame *frame);
 
-    /* The UVC/rosbag JPEG carries the same timestamp in its SCAM APP1 marker;
+    /* The UVC JPEG carries the same timestamp in its SCAM APP1 marker;
      * the shared-memory SDK path also exposes it directly in this frame record. */
     int camera_client_read_latest_jpeg(camera_client_t *client, struct camera_client_frame *frame);
 

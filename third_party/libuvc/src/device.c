@@ -999,6 +999,15 @@ uvc_error_t uvc_claim_if(uvc_device_handle_t *devh, int idx) {
     return ret;
   }
 
+#if defined(__APPLE__)
+  /* Darwin detaches drivers by capturing and re-enumerating the entire USB
+   * device. An unconditional detach requires elevated privileges even when
+   * this interface is free, and interrupts the camera's other interfaces.
+   * Claim only the requested UVC interface without capturing the device. */
+  ret = libusb_claim_interface(devh->usb_devh, idx);
+  if (ret == UVC_SUCCESS)
+    devh->claimed |= ( 1 << idx );
+#else
   /* Tell libusb to detach any active kernel drivers. libusb will keep track of whether
    * it found a kernel driver for this interface. */
   ret = libusb_detach_kernel_driver(devh->usb_devh, idx);
@@ -1012,6 +1021,7 @@ uvc_error_t uvc_claim_if(uvc_device_handle_t *devh, int idx) {
     UVC_DEBUG("not claiming interface %d: unable to detach kernel driver (%s)",
               idx, uvc_strerror(ret));
   }
+#endif
 
   UVC_EXIT(ret);
   return ret;
@@ -1043,6 +1053,7 @@ uvc_error_t uvc_release_if(uvc_device_handle_t *devh, int idx) {
 
   if (UVC_SUCCESS == ret) {
     devh->claimed &= ~( 1 << idx );
+#if !defined(__APPLE__)
     /* Reattach any kernel drivers that were disabled when we claimed this interface */
     ret = libusb_attach_kernel_driver(devh->usb_devh, idx);
 
@@ -1054,6 +1065,7 @@ uvc_error_t uvc_release_if(uvc_device_handle_t *devh, int idx) {
       UVC_DEBUG("error reattaching kernel driver to interface %d: %s",
                 idx, uvc_strerror(ret));
     }
+#endif
   }
 
   UVC_EXIT(ret);

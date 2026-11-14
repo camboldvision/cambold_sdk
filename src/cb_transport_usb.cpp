@@ -8,6 +8,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <cfgmgr32.h>
 #include <setupapi.h>
 #include <winusb.h>
 #endif
@@ -23,6 +24,14 @@
 
 namespace
 {
+
+constexpr uint16_t kCameraVid = 0x2207;
+constexpr uint16_t kCameraPid = 0x0019;
+
+bool is_camera(const libusb_device_descriptor &descriptor)
+{
+    return descriptor.idVendor == kCameraVid && descriptor.idProduct == kCameraPid;
+}
 
 struct Candidate
 {
@@ -170,8 +179,8 @@ const char *winusb_guid_for_interface(int interface_number)
     }
 }
 
-bool find_winusb_path(uint16_t vid, uint16_t pid, int interface_number, std::string *path,
-                      std::string *error)
+bool find_winusb_path(DEVINST device_instance, uint16_t vid, uint16_t pid, int interface_number,
+                      std::string *path, std::string *error)
 {
     const char *guid = winusb_guid_for_interface(interface_number);
     if (!guid)
@@ -182,7 +191,7 @@ bool find_winusb_path(uint16_t vid, uint16_t pid, int interface_number, std::str
     }
 
     char needle[64];
-    std::snprintf(needle, sizeof(needle), "VID_%04X&PID_%04X&MI_%02X\\", vid, pid,
+    std::snprintf(needle, sizeof(needle), "USB\\VID_%04X&PID_%04X&MI_%02X\\", vid, pid,
                   interface_number);
 
     HDEVINFO devices =
@@ -206,7 +215,14 @@ bool find_winusb_path(uint16_t vid, uint16_t pid, int interface_number, std::str
         std::string upper = id;
         std::transform(upper.begin(), upper.end(), upper.begin(),
                        [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        if (upper.find(needle) == std::string::npos)
+        if (upper.compare(0, std::strlen(needle), needle) != 0)
+            continue;
+
+        // The bundled libusb WinUSB backend exposes DEVINST as session data.
+        // Keep the interface attached to the exact composite device selected
+        // above, even if another camera has the same VID/PID and interface ID.
+        DEVINST parent = 0;
+        if (CM_Get_Parent(&parent, data.DevInst, 0) != CR_SUCCESS || parent != device_instance)
             continue;
 
         std::replace(id.begin(), id.end(), '\\', '#');
@@ -217,7 +233,7 @@ bool find_winusb_path(uint16_t vid, uint16_t pid, int interface_number, std::str
     SetupDiDestroyDeviceInfoList(devices);
     if (!found && error)
     {
-        *error = "WinUSB interface instance was not found";
+        *error = "WinUSB interface for the selected CamBold device was not found";
     }
     return found;
 }
@@ -226,16 +242,18 @@ bool open_winusb_interface(libusb_device *device, int interface_number, void **f
                            void **handle_out, std::string *device_name, std::string *error)
 {
     libusb_device_descriptor descriptor{};
-    if (libusb_get_device_descriptor(device, &descriptor) != LIBUSB_SUCCESS)
+    if (libusb_get_device_descriptor(device, &descriptor) != LIBUSB_SUCCESS ||
+        !is_camera(descriptor))
     {
         if (error)
-            *error = "could not read USB device descriptor";
+            *error = "USB device is not a supported CamBold camera";
         return false;
     }
 
     std::string path;
-    if (!find_winusb_path(descriptor.idVendor, descriptor.idProduct, interface_number, &path,
-                          error))
+    const auto device_instance = static_cast<DEVINST>(libusb_get_session_data(device));
+    if (!find_winusb_path(device_instance, descriptor.idVendor, descriptor.idProduct,
+                          interface_number, &path, error))
         return false;
 
     HANDLE file =
@@ -363,9 +381,16 @@ std::unique_ptr<CbTransport> CbTransport::open(const std::string &requested, boo
         return fail(usb_error(static_cast<int>(count), "libusb_get_device_list"));
 
     std::vector<DeviceCandidates> devices;
+    size_t camera_count = 0;
     for (ssize_t n = 0; n < count; ++n)
     {
         libusb_device *device = list[n];
+        libusb_device_descriptor descriptor{};
+        if (libusb_get_device_descriptor(device, &descriptor) != LIBUSB_SUCCESS ||
+            !is_camera(descriptor))
+            continue;
+        ++camera_count;
+
         libusb_config_descriptor *config = nullptr;
         if (libusb_get_config_descriptor(device, 0, &config) != LIBUSB_SUCCESS)
             continue;
@@ -401,6 +426,14 @@ std::unique_ptr<CbTransport> CbTransport::open(const std::string &requested, boo
         }
     }
 
+    // The public API currently has no physical-camera selector. Do not let
+    // independently opened control/debug channels choose different cameras.
+    if (camera_count > 1)
+    {
+        libusb_free_device_list(list, 1);
+        return fail("Multiple CamBold USB cameras found; connect only one camera");
+    }
+
     if (devices.empty())
     {
         libusb_free_device_list(list, 1);
@@ -409,8 +442,8 @@ std::unique_ptr<CbTransport> CbTransport::open(const std::string &requested, boo
         return fail(std::string{});
     }
 
-    /* A product gadget has gser.0 followed by gser.1.  Prefer a group
-     * with at least two interfaces and use the role-specific index; this also
+    /* A product gadget has gser.0 followed by gser.1. Use the two interfaces
+     * of the selected CamBold device and the role-specific index; this also
      * works if the host assigned a different USB interface number after a
      * reconnect. */
     const DeviceCandidates *chosen_device = &devices.front();
@@ -453,10 +486,12 @@ std::unique_ptr<CbTransport> CbTransport::open(const std::string &requested, boo
     if (rc != LIBUSB_SUCCESS)
         return fail(usb_error(rc, "libusb_open"));
 
-    /* On Linux, auto-detach handles a stale generic USB-serial binding.  A
-     * vendor-specific interface normally has no kernel driver.  macOS and
-     * Windows may return NOT_SUPPORTED; claiming the interface still works. */
+    /* On Linux, auto-detach handles a stale generic USB-serial binding.
+     * On macOS, detaching captures and re-enumerates the entire composite
+     * device, so vendor interfaces must be claimed without auto-detach. */
+#if defined(__linux__)
     (void)libusb_set_auto_detach_kernel_driver(port->handle_, 1);
+#endif
     rc = libusb_claim_interface(port->handle_, candidate.interface_number);
     if (rc != LIBUSB_SUCCESS)
     {

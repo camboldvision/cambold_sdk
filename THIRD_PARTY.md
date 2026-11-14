@@ -12,7 +12,8 @@ are built statically. Their source and notices remain in `third_party/`:
 The libusb and libuvc directories contain only the sources and headers used by
 `cmake/usb.cmake` on Windows, Linux and macOS, plus their license notices.
 Examples, tests, upstream build files and other platform backends are omitted.
-Retained source files are unchanged. Upstream: [libusb](https://github.com/libusb/libusb)
+The libuvc interface claim/release path is patched on macOS to avoid capturing
+and re-enumerating the entire composite device. Upstream: [libusb](https://github.com/libusb/libusb)
 and [libuvc](https://github.com/libuvc/libuvc).
 
 The LOCAL backend builds no libusb or libuvc code. Windows video capture uses

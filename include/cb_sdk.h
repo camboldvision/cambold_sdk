@@ -29,7 +29,6 @@ extern "C"
         CB_EVENT_RESULT = 3,
         CB_EVENT_METRICS = 4,
         CB_EVENT_ANTENNA = 5,
-        CB_EVENT_ROSBAG = 6,
         CB_EVENT_IMU_STATUS = 7,
         CB_EVENT_STREAM_STATUS = 8,
         CB_EVENT_ERROR = 9,
@@ -336,9 +335,6 @@ extern "C"
     /* Update the debug terminal size. USB sends the request to ttyGS0 on the
        board; LOCAL updates the calling SDK object's private shell PTY. */
     int cb_set_terminal_size(cb_t *host, uint16_t cols, uint16_t rows, uint64_t request_id);
-    int cb_rosbag_start(cb_t *host, const char *name, int record_image, int record_imu,
-                        uint64_t request_id);
-    int cb_rosbag_stop(cb_t *host, uint64_t request_id);
 
     /* The debug interface is intentionally independent from the binary
        control bulk interface. `port` is optional and may be "gser.0"/"bulk0";

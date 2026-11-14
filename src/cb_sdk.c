@@ -86,55 +86,6 @@ int cb_set_terminal_size(cb_t *host, uint16_t cols, uint16_t rows, uint64_t requ
                                request_id);
 }
 
-static int basename_copy(const char *input, char *out, size_t capacity)
-{
-    const char *begin;
-    const char *p;
-    size_t length;
-    if (!input || !out || capacity < 2)
-        return -EINVAL;
-    begin = input;
-    p = input;
-    while (*p)
-    {
-        if (*p == '/' || *p == '\\')
-            begin = p + 1;
-        ++p;
-    }
-    length = strlen(begin);
-    if (length == 0 || strcmp(begin, ".") == 0 || strcmp(begin, "..") == 0)
-        return -EINVAL;
-    if (length >= capacity)
-        return -ENAMETOOLONG;
-    memcpy(out, begin, length + 1);
-    return 0;
-}
-
-int cb_rosbag_start(cb_t *host, const char *name, int record_image, int record_imu,
-                    uint64_t request_id)
-{
-    char base[256];
-    uint8_t payload[1 + sizeof(base)];
-    size_t length;
-    int ret;
-    /* The current board protocol has only the image flag. It always records
-       IMU when the rosbag worker is enabled, so never pretend IMU=0 worked. */
-    if (!record_imu)
-        return -ENOTSUP;
-    ret = basename_copy(name, base, sizeof(base));
-    if (ret != 0)
-        return ret;
-    length = strlen(base);
-    payload[0] = record_image ? 1u : 0u;
-    memcpy(payload + 1, base, length);
-    return cb_internal_request(host, CB_ROSBAG_START_REQ, payload, length + 1, request_id);
-}
-
-int cb_rosbag_stop(cb_t *host, uint64_t request_id)
-{
-    return send_empty(host, CB_ROSBAG_STOP_REQ, request_id);
-}
-
 int cb_debug_open(cb_t *host, const char *port, uint32_t baudrate)
 {
     return cb_internal_debug_open(host, port, baudrate);
