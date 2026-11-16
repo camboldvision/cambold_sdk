@@ -95,9 +95,9 @@ extern "C"
         uint32_t reserved;
     };
 
-    /* Shared-memory ring metadata.  The producer publishes a slot by copying its
-     * payload first and storing slot.sequence with release ordering. Readers use
-     * acquire loads and verify the sequence again after copying. */
+    /* Shared-memory ring metadata. The producer invalidates slot.sequence before
+     * reusing a slot, then publishes its completed payload and metadata with a
+     * release store. Readers validate the sequence after copying both. */
     struct camera_broker_ring_header
     {
         uint32_t magic;

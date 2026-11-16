@@ -109,6 +109,7 @@ macOS 的驱动捕获作用于整个复合 USB 设备。捕获期间，MTP、系
 | 深度和颜色 | `cb_set_disparity_enabled`、`cb_get_disparity` |
 | 投影和三维坐标 | `cb_set_disparity_config_ex`、`cb_disparity_to_point` |
 | SLAM | `cb_slam_start/stop`、`cb_slam_get_pose`、`cb_slam_poll_json` |
+| 相机标定 | `cb_calibration_command`、`cb_get_calibration_status`、`cb_get_calibration_preview`、`cb_request_calibration_report` |
 | 系统与终端 | `cb_request_metrics`、`cb_debug_open/read/write/close` |
 
 图像、IMU、深度和位姿使用板端 `CLOCK_MONOTONIC` 纳秒时间戳。图像时间为曝光
@@ -134,6 +135,53 @@ USB 后台每两秒发送心跳。应用异常退出或拔线后，服务在十�
 SDK 也可通过 `cmake --install build/usb --prefix /path/to/sdk` 安装。使用已安装库时，
 设置 `CMAKE_PREFIX_PATH`，然后调用 `find_package(CamBoldSDK CONFIG REQUIRED)` 并链接
 `CamBold::SDK`。安装库对应构建时选择的平台与后端；跨平台分发请提供本目录源码。
+
+## 板端标定任务
+
+USB 和 LOCAL 后端使用同一组 `cb_calibration_*` 接口，需要固件提供
+`CB_CAP_CALIBRATION` 能力。旧固件返回 `-ENOTSUP`。
+
+`cb_calibration_command()` 是异步请求。返回 0 表示已排队，应用应等待
+`CB_EVENT_CALIBRATION_STATUS` 中相同 `request_id` 的 JSON 回复，并检查 `ok/error`。
+无请求号的事件是周期状态，包含 `version=1`、`task`、`phase`、`step`、
+`hardware_ready`、`quiet_elapsed_s`、`remaining_s`、`coverage_percent`、
+`iteration/max_iterations`、`cost` 和 `heartbeat_ns` 等字段。
+`cb_get_calibration_status()` 复制最近状态，尚未收到状态时返回 `{}`。
+
+正常流程为 `ENTER` → 等待 `hardware_ready` → `START_IMU` 或 `START_CAMERA` →
+`SOLVE` → 等待 `task=completed` → `LEAVE`。使用 `CANCEL` 取消采集或求解，
+收到完成/取消状态后再 `LEAVE`；文件写入与回读阶段不接受取消。
+`START_CAMERA` 需要填写 `cb_calibration_options` 中实际标定板参数，并要求共享
+YAML 中已有有效 IMU 噪声。`START_IMU` 需要连续静置至少 7200 秒才可 `SOLVE`。
+
+标定模式暂停普通 IMU、深度和 SLAM 的 bulk 数据，原始 UVC 预览保持可用。
+临时 30fps 配置在 `LEAVE` 后恢复。应用应先停止正在进行的录制和 SLAM；
+切换页面或 SDK 断线不会取消板端标定任务，重新连接后先查询状态。
+
+标定预览通过 `CB_EVENT_CALIBRATION_PREVIEW` 或
+`cb_get_calibration_preview()` 获取。事件 payload 的前 32 字节为小端元数据：
+`version/width/height/camera_count`（各 4 字节），随后为 `sequence/timestamp_ns`
+（各 8 字节），其后为 JPEG。Getter 单独填充 `cb_calibration_preview` 并复制 JPEG。
+预览包含两目原始画面和历史角点覆盖，标定计算使用原始分辨率坐标。
+预览回调与控制回调可能并发，耗时图像处理应交给应用自己的线程。
+
+`cb_request_calibration_report()` 异步读取报告，不要求 `ENTER`，USB 和 LOCAL 行为相同。
+类型为 `CB_CALIBRATION_REPORT_CURRENT`（当前 YAML）、`CB_CALIBRATION_REPORT_JOINT`
+（双目与相机–IMU）或 `CB_CALIBRATION_REPORT_IMU`（静态噪声）。相同请求号的
+`CB_EVENT_CALIBRATION_STATUS` 回复包含 `ok/error`；成功时包含：
+
+```json
+{"ok":true,"report_chunk":{"kind":"joint","revision":123,"offset":0,"total":20000,"data":"..."}}
+```
+
+首次传入 `revision=0, offset=0`，后续携带返回的 `revision` 与累计数据长度。
+每片最多 8192 字节，报告最多 2 MiB。`data` 为 ASCII JSON 文本片段，中文用 JSON 转义表示。
+按 `offset` 顺序拼接到 `total`，验证整个 ASCII 文本的 FNV-1a-32 等于 `revision` 后，
+再解析为 JSON。报告变化或连接中断时从零重新读取。分片回复不会替换周期状态缓存。
+
+当前参数随请求读取 YAML；两种详细报告由对应阶段完成后分别持久化，包含当时的 YAML 快照。
+报告字段 `version=1`，`kind=current/joint/imu`。历史 YAML 不含误差曲线，尚未生成详细报告时
+请求会返回明确错误。状态的 `reports.current/joint/imu` 可用于判断文件是否存在。
 
 ## 多应用使用
 

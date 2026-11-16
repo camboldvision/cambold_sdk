@@ -359,6 +359,10 @@ static bool publish_record(CameraIpcRings::Ring *ring, int notify_fd, const void
         static_cast<uint8_t *>(ring->mapping) + ring->header->header_size +
         static_cast<size_t>(slot_index) * ring->header->slot_size);
     uint8_t *dst = reinterpret_cast<uint8_t *>(slot) + sizeof(*slot);
+    // A reader may still be copying the previous use of this slot. Invalidate
+    // it before touching either pixels or metadata, so that reader must retry.
+    // The acquire part also keeps the following writes after invalidation.
+    __atomic_exchange_n(&slot->sequence, 0ULL, __ATOMIC_ACQ_REL);
     std::memcpy(dst, payload, payload_size);
     slot->timestamp_monotonic_ns = timestamp_ns;
     slot->payload_size = static_cast<uint32_t>(payload_size);
@@ -422,19 +426,24 @@ static bool read_ring_sequence(const CameraIpcRings::Ring *ring, uint64_t sequen
     if (published != sequence || slot->payload_size > payload_capacity ||
         slot->payload_size > ring->payload_capacity)
         return false;
-    const uint32_t bytes = slot->payload_size;
+    CameraIpcRecord snapshot;
+    snapshot.sequence = sequence;
+    snapshot.timestamp_monotonic_ns = slot->timestamp_monotonic_ns;
+    snapshot.payload_size = slot->payload_size;
+    snapshot.width = slot->width;
+    snapshot.height = slot->height;
+    snapshot.stride = slot->stride;
+    snapshot.format = slot->format;
+    snapshot.flags = slot->flags;
+    if (snapshot.payload_size > payload_capacity || snapshot.payload_size > ring->payload_capacity)
+        return false;
     const uint8_t *src = reinterpret_cast<const uint8_t *>(slot) + sizeof(*slot);
-    std::memcpy(payload, src, bytes);
+    std::memcpy(payload, src, snapshot.payload_size);
+    // Validate pixels and their metadata together, after all shared reads.
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) != sequence)
         return false;
-    record->sequence = sequence;
-    record->timestamp_monotonic_ns = slot->timestamp_monotonic_ns;
-    record->payload_size = bytes;
-    record->width = slot->width;
-    record->height = slot->height;
-    record->stride = slot->stride;
-    record->format = slot->format;
-    record->flags = slot->flags;
+    *record = snapshot;
     return true;
 }
 
@@ -449,15 +458,20 @@ static bool read_ring_metadata(const CameraIpcRings::Ring *ring, uint64_t sequen
         static_cast<size_t>(slot_index) * ring->header->slot_size);
     if (__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) != sequence)
         return false;
-    record->sequence = sequence;
-    record->timestamp_monotonic_ns = slot->timestamp_monotonic_ns;
-    record->payload_size = slot->payload_size;
-    record->width = slot->width;
-    record->height = slot->height;
-    record->stride = slot->stride;
-    record->format = slot->format;
-    record->flags = slot->flags;
-    return __atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) == sequence;
+    CameraIpcRecord snapshot;
+    snapshot.sequence = sequence;
+    snapshot.timestamp_monotonic_ns = slot->timestamp_monotonic_ns;
+    snapshot.payload_size = slot->payload_size;
+    snapshot.width = slot->width;
+    snapshot.height = slot->height;
+    snapshot.stride = slot->stride;
+    snapshot.format = slot->format;
+    snapshot.flags = slot->flags;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) != sequence)
+        return false;
+    *record = snapshot;
+    return true;
 }
 
 bool CameraIpcRings::read_latest(uint32_t ring_id, uint64_t *cursor, void *payload,

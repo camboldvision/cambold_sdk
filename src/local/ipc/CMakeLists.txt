@@ -17,4 +17,4 @@ target_include_directories(camera_client PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRE
 target_link_libraries(camera_client PUBLIC camera_ipc)
 install(TARGETS camera_client camera_ipc EXPORT CamBoldSDKTargets ARCHIVE DESTINATION lib)
 install(FILES camera_client.h camera_broker_protocol.h camera_ipc.hpp stereo_local.hpp
-    slam_envelope.hpp slam_socket.hpp DESTINATION include/cambold/detail)
+    slam_envelope.hpp slam_socket.hpp calibration_ipc.hpp DESTINATION include/cambold/detail)

@@ -37,7 +37,9 @@ extern "C"
         CB_EVENT_SENSOR_STATUS = 12,
         CB_EVENT_DEVICE_CONFIG = 13,
         CB_EVENT_STEREO_STATUS = 14,
-        CB_EVENT_DISPARITY = 15
+        CB_EVENT_DISPARITY = 15,
+        CB_EVENT_CALIBRATION_STATUS = 16,
+        CB_EVENT_CALIBRATION_PREVIEW = 17
     };
 
     typedef struct cb_event
@@ -53,6 +55,58 @@ extern "C"
     } cb_event;
 
     typedef void (*cb_event_callback)(const cb_event *event, void *user);
+
+    enum cb_calibration_action
+    {
+        CB_CALIBRATION_STATUS_QUERY = 0,
+        CB_CALIBRATION_ENTER = 1,
+        CB_CALIBRATION_START_IMU = 2,
+        CB_CALIBRATION_START_CAMERA = 3,
+        CB_CALIBRATION_SOLVE = 4,
+        CB_CALIBRATION_CANCEL = 5,
+        CB_CALIBRATION_LEAVE = 6
+    };
+    typedef struct cb_calibration_options
+    {
+        uint32_t tag_rows, tag_cols;
+        double tag_size_metres; /* Outer black tag edge, metres. */
+        double tag_spacing;     /* Gap / tag edge. Tag36h11, black border 2. */
+    } cb_calibration_options;
+    typedef struct cb_calibration_preview
+    {
+        uint32_t width, height, camera_count;
+        uint64_t sequence, timestamp_monotonic_ns;
+    } cb_calibration_preview;
+
+    /* Asynchronous: results/status arrive as CB_EVENT_CALIBRATION_STATUS JSON
+       (version 1); request_id matches this call. Opening calibration pauses
+       ordinary bulk samples, not UVC. A task survives PC disconnection.
+       START_CAMERA uses existing valid IMU noise in the shared YAML.
+       SOLVE for static IMU requires at least 7200 continuous stationary seconds.
+       LEAVE requires a finished/cancelled task and restores the camera rate. */
+    int cb_calibration_command(cb_t *, enum cb_calibration_action, const cb_calibration_options *,
+                               uint64_t request_id);
+    int cb_get_calibration_status(cb_t *, char *json, size_t capacity);
+    /* Copies the newest complete JPEG (both raw eyes with coverage overlay).
+       Set *jpeg_size to capacity; ENOSPC returns required size. EAGAIN means
+       sequence <= after_sequence. No image pointer survives this call. */
+    int cb_get_calibration_preview(cb_t *, uint64_t after_sequence, cb_calibration_preview *,
+                                   uint8_t *jpeg, size_t *jpeg_size);
+    enum cb_calibration_report_kind {
+        CB_CALIBRATION_REPORT_CURRENT = 0,
+        CB_CALIBRATION_REPORT_JOINT = 1,
+        CB_CALIBRATION_REPORT_IMU = 2
+    };
+    /* Reads at most 8192 ASCII JSON bytes per reply, without entering calibration.
+       CB_EVENT_CALIBRATION_STATUS with this request_id contains ok/error and
+       report_chunk:{kind,revision,offset,total,data}. Start with revision=offset=0;
+       repeat with returned revision and offset+data.size() until total bytes.
+       Verify FNV-1a-32 of the concatenated ASCII data equals revision, then parse
+       the JSON. Max 2 MiB. Restart from zero if the report changes or reconnects.
+       Reports survive restart; old YAML-only calibrations have no detailed data.
+       The API and response are identical for USB and LOCAL transports. */
+    int cb_request_calibration_report(cb_t *, enum cb_calibration_report_kind,
+                                      uint32_t revision, uint32_t offset, uint64_t request_id);
 
     /* Native JPEG frames belong to the SDK. The callback receives the
            original MJPEG payload; the data pointer is valid only until the callback

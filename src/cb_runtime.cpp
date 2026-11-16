@@ -18,6 +18,10 @@
 #include <cstring>
 #include <deque>
 #include <memory>
+#include <cmath>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -201,6 +205,8 @@ class SdkImpl
 
     int send(uint16_t type, const uint8_t *payload, size_t payload_size, uint64_t request_id)
     {
+        if (type == CB_CALIBRATION_COMMAND && (!connected_ || !calibration_supported_))
+            return !connected_ ? -ENOTCONN : -ENOTSUP;
 #ifdef CB_SDK_LOCAL
         if (type == CB_TERMINAL_SIZE_SET_REQ)
         {
@@ -353,7 +359,49 @@ class SdkImpl
         return (int)device_name_.size();
     }
 
+    int calibration_status(char *out, size_t capacity)
+    {
+        if (!out || !capacity)
+            return -EINVAL;
+        std::lock_guard<std::mutex> lock(calibration_mutex_);
+        if (capacity <= calibration_status_.size())
+            return -ENOSPC;
+        std::memcpy(out, calibration_status_.c_str(), calibration_status_.size() + 1);
+        return 0;
+    }
+    int calibration_preview(uint64_t after, cb_calibration_preview *info, uint8_t *jpeg,
+                            size_t *capacity)
+    {
+        if (!info || !capacity)
+            return -EINVAL;
+        std::shared_ptr<std::vector<uint8_t>> frame;
+        {
+            std::lock_guard<std::mutex> lock(disparity_mutex_);
+            frame = latest_calibration_preview_;
+        }
+        if (!frame || get64(frame->data() + 16) <= after)
+            return -EAGAIN;
+        info->width = get32(frame->data() + 4);
+        info->height = get32(frame->data() + 8);
+        info->camera_count = get32(frame->data() + 12);
+        info->sequence = get64(frame->data() + 16);
+        info->timestamp_monotonic_ns = get64(frame->data() + 24);
+        size_t size = frame->size() - 32, available = *capacity;
+        *capacity = size;
+        if (!jpeg || available < size)
+            return -ENOSPC;
+        std::memcpy(jpeg, frame->data() + 32, size);
+        return 0;
+    }
+
   private:
+    std::mutex calibration_mutex_;
+    std::string calibration_status_ = "{}";
+    std::shared_ptr<std::vector<uint8_t>> latest_calibration_preview_;
+    std::vector<uint8_t> calibration_bytes_;
+    uint64_t calibration_frame_id_ = 0;
+    uint32_t calibration_total_ = 0;
+    Clock::time_point calibration_start_{};
     std::vector<uint8_t> make_frame(uint16_t type, const uint8_t *payload, size_t payload_size,
                                     uint64_t request_id)
     {
@@ -455,10 +503,10 @@ class SdkImpl
 
     void disparity_main()
     {
-        uint64_t last = 0;
+        uint64_t last = 0, calibration_last = 0;
         while (!stopping_)
         {
-            std::shared_ptr<std::vector<uint8_t>> frame;
+            std::shared_ptr<std::vector<uint8_t>> frame, calibration_frame;
             {
                 std::unique_lock<std::mutex> lock(disparity_mutex_);
                 disparity_cv_.wait(lock,
@@ -466,18 +514,95 @@ class SdkImpl
                                    {
                                        return stopping_ ||
                                               (latest_disparity_ &&
-                                               get64(latest_disparity_->data() + 8) != last);
+                                               get64(latest_disparity_->data() + 8) != last) ||
+                                              (latest_calibration_preview_ &&
+                                               get64(latest_calibration_preview_->data() + 16) !=
+                                                   calibration_last);
                                    });
                 if (stopping_)
                     break;
-                frame = latest_disparity_;
-                last = get64(frame->data() + 8);
+                if (latest_disparity_ && get64(latest_disparity_->data() + 8) != last)
+                {
+                    frame = latest_disparity_;
+                    last = get64(frame->data() + 8);
+                }
+                if (latest_calibration_preview_ &&
+                    get64(latest_calibration_preview_->data() + 16) != calibration_last)
+                {
+                    calibration_frame = latest_calibration_preview_;
+                    calibration_last = get64(calibration_frame->data() + 16);
+                }
             }
-            emit(CB_EVENT_DISPARITY, 0, 0, frame->data(), frame->size());
+            if (frame)
+                emit(CB_EVENT_DISPARITY, 0, 0, frame->data(), frame->size());
+            if (calibration_frame)
+                emit(CB_EVENT_CALIBRATION_PREVIEW, 0, 0, calibration_frame->data(),
+                     calibration_frame->size());
+        }
+    }
+    void calibration_chunk(const uint8_t *p, size_t n)
+    {
+        if (n <= 24 || n > 4120)
+        {
+            calibration_bytes_.clear();
+            return;
+        }
+        uint64_t id = get64(p);
+        uint32_t total = get32(p + 12), offset = get32(p + 16);
+        if (!id || total < 36 || total > 256 * 1024 || offset > total || n - 24 > total - offset ||
+            CbDisparityAssembler::crc32(p + 24, n - 24) != get32(p + 20))
+        {
+            calibration_bytes_.clear();
+            return;
+        }
+        if (offset == 0)
+        {
+            calibration_bytes_.clear();
+            calibration_frame_id_ = id;
+            calibration_total_ = total;
+            calibration_start_ = Clock::now();
+        }
+        if (id != calibration_frame_id_ || total != calibration_total_ ||
+            offset != calibration_bytes_.size() ||
+            Clock::now() - calibration_start_ > std::chrono::milliseconds(500))
+        {
+            calibration_bytes_.clear();
+            return;
+        }
+        calibration_bytes_.insert(calibration_bytes_.end(), p + 24, p + n);
+        if (calibration_bytes_.size() == total)
+        {
+            auto &v = calibration_bytes_;
+            if (get32(v.data()) == 1 && get64(v.data() + 16) == id && get32(v.data() + 4) > 0 &&
+                get32(v.data() + 4) <= 1280 && get32(v.data() + 8) > 0 &&
+                get32(v.data() + 8) <= 1280 && get32(v.data() + 12) == 2 && v[32] == 0xff &&
+                v[33] == 0xd8)
+            {
+                std::lock_guard<std::mutex> lock(disparity_mutex_);
+                latest_calibration_preview_ = std::make_shared<std::vector<uint8_t>>(std::move(v));
+                disparity_cv_.notify_one();
+            }
+            calibration_bytes_.clear();
         }
     }
     void handle_control(uint16_t type, uint64_t request_id, const uint8_t *payload, size_t size)
     {
+        if (type == CB_CALIBRATION_STATUS)
+        {
+            std::string text(reinterpret_cast<const char *>(payload), size);
+            if (text.find("\"heartbeat_ns\":") != std::string::npos)
+            {
+                std::lock_guard<std::mutex> lock(calibration_mutex_);
+                calibration_status_ = text;
+            }
+            emit(CB_EVENT_CALIBRATION_STATUS, request_id, 0, payload, size, text);
+            return;
+        }
+        if (type == CB_CALIBRATION_PREVIEW_CHUNK)
+        {
+            calibration_chunk(payload, size);
+            return;
+        }
         if (type == CB_SLAM_PACKET)
         {
             if (slam_)
@@ -524,6 +649,7 @@ class SdkImpl
         if (type == CB_HELLO_RSP)
         {
             slam_supported_ = size >= 8 && (get32(payload + 4) & CB_CAP_SLAM);
+            calibration_supported_ = size >= 8 && (get32(payload + 4) & CB_CAP_CALIBRATION);
             if (!connected_.exchange(true))
             {
                 emit(CB_EVENT_CONNECTED, request_id, 0, payload, size);
@@ -616,12 +742,21 @@ class SdkImpl
             device_name_.clear();
         }
         slam_supported_ = false;
+        calibration_supported_ = false;
+        calibration_bytes_.clear();
+        calibration_frame_id_ = 0;
+        calibration_total_ = 0;
+        {
+            std::lock_guard<std::mutex> lock(calibration_mutex_);
+            calibration_status_ = "{}";
+        }
         if (slam_)
             slam_->disconnected();
         disparity_assembler_.reset();
         {
             std::lock_guard<std::mutex> lock(disparity_mutex_);
             latest_disparity_.reset();
+            latest_calibration_preview_.reset();
         }
         if (connected_.exchange(false))
             emit(CB_EVENT_DISCONNECTED, 0, CB_RESULT_IO, nullptr, 0);
@@ -941,6 +1076,7 @@ class SdkImpl
     std::atomic<bool> stopping_{false};
     std::atomic<bool> connected_{false};
     std::atomic<bool> slam_supported_{false};
+    std::atomic<bool> calibration_supported_{false};
     std::unique_ptr<CbSlam> slam_;
     std::once_flag slam_start_;
     std::atomic<uint64_t> request_id_{1};
@@ -1258,4 +1394,69 @@ extern "C" void cb_slam_free_json(char *p)
 extern "C" int cb_slam_clear_view(cb_t *h)
 {
     return slam_call(h, [](CbSlam &s) { s.client().scene().clear(); });
+}
+
+extern "C" int cb_get_calibration_status(cb_t *host, char *out, size_t capacity)
+{
+    auto *object = impl(host);
+    return api_result([&] { return object ? object->calibration_status(out, capacity) : -EINVAL; });
+}
+extern "C" int cb_get_calibration_preview(cb_t *host, uint64_t after, cb_calibration_preview *info,
+                                          uint8_t *jpeg, size_t *size)
+{
+    auto *object = impl(host);
+    return api_result(
+        [&] { return object ? object->calibration_preview(after, info, jpeg, size) : -EINVAL; });
+}
+
+extern "C" int cb_request_calibration_report(cb_t *host, enum cb_calibration_report_kind kind,
+                                             uint32_t revision, uint32_t offset, uint64_t id)
+{
+    return api_result([&] {
+        static const char *names[] = {"current", "joint", "imu"};
+        if (kind < CB_CALIBRATION_REPORT_CURRENT || kind > CB_CALIBRATION_REPORT_IMU ||
+            offset > 2 * 1024 * 1024)
+            return -EINVAL;
+        std::ostringstream json;
+        json.imbue(std::locale::classic());
+        json << "{\"action\":\"report\",\"kind\":\"" << names[kind]
+             << "\",\"revision\":" << revision << ",\"offset\":" << offset << '}';
+        const auto body = json.str();
+        return cb_internal_request(host, CB_CALIBRATION_COMMAND,
+                                   reinterpret_cast<const uint8_t *>(body.data()), body.size(), id);
+    });
+}
+
+extern "C" int cb_calibration_command(cb_t *host, enum cb_calibration_action action,
+                                      const cb_calibration_options *o, uint64_t id)
+{
+    return api_result(
+        [&]
+        {
+            static const char *names[] = {"status", "enter",  "start_imu", "start_camera",
+                                          "solve",  "cancel", "leave"};
+            if (action < CB_CALIBRATION_STATUS_QUERY || action > CB_CALIBRATION_LEAVE)
+                return -EINVAL;
+            std::ostringstream json;
+            json.imbue(std::locale::classic());
+            json << std::setprecision(12);
+            json << "{\"action\":\"" << names[action] << "\"";
+            if (action == CB_CALIBRATION_START_CAMERA)
+            {
+                if (!o || !o->tag_rows || !o->tag_cols || o->tag_rows > 587 || o->tag_cols > 587 ||
+                    o->tag_rows * o->tag_cols < 2 || o->tag_rows * o->tag_cols > 587 ||
+                    !std::isfinite(o->tag_size_metres) || o->tag_size_metres <= 0 ||
+                    o->tag_size_metres > 2 || !std::isfinite(o->tag_spacing) ||
+                    o->tag_spacing < 0 || o->tag_spacing > 2)
+                    return -EINVAL;
+                json << ",\"rows\":" << o->tag_rows << ",\"cols\":" << o->tag_cols
+                     << ",\"tag_size_m\":" << o->tag_size_metres
+                     << ",\"spacing\":" << o->tag_spacing;
+            }
+            json << '}';
+            const auto body = json.str();
+            return cb_internal_request(host, CB_CALIBRATION_COMMAND,
+                                       reinterpret_cast<const uint8_t *>(body.data()), body.size(),
+                                       id);
+        });
 }

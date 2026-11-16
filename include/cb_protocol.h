@@ -16,6 +16,7 @@ extern "C"
 #define CB_PROTOCOL_MAX_PAYLOAD (1024u * 1024u)
 #define CB_CAP_STEREO_DISPARITY (1u << 7)
 #define CB_CAP_SLAM (1u << 8)
+#define CB_CAP_CALIBRATION (1u << 9)
 
     enum cb_message_type
     {
@@ -53,7 +54,10 @@ extern "C"
         CB_DISPARITY_CHUNK = 0x0074,
         CB_SLAM_PACKET = 0x0080,
         CB_SLAM_LINK = 0x0081,
-        CB_SLAM_LINK_STATUS = 0x0082
+        CB_SLAM_LINK_STATUS = 0x0082,
+        CB_CALIBRATION_COMMAND = 0x0090,
+        CB_CALIBRATION_STATUS = 0x0091,
+        CB_CALIBRATION_PREVIEW_CHUNK = 0x0092
     };
 
     enum cb_result_code
