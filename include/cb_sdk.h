@@ -307,9 +307,10 @@ extern "C"
 
     /* SLAM uses the same SDK bulk connection; the user's ACM remains free.
        Commands are asynchronous: inspect state.last_result in get_json/poll_json
-       for board acceptance/completion and errors. Mode is fixed for each run.
-       Dense reconstruction blocks all host IMU upload (internal VIO IMU remains
-       active). Sparse mode performs stereo VIO without running the depth network.
+       for board acceptance/completion and errors. Map selection is fixed for
+       each run; processing can change through cb_slam_set_processing().
+       Dense reconstruction blocks USB SDK IMU upload; LOCAL and internal VIO
+       IMU remain active. Sparse mode does not request the depth network.
        START may automatically apply the map's camera configuration. Command and
        subscription APIs return -ENOTCONN until the SLAM handshake is ready;
        a zero return means queued, not completed. Commands are not replayed after
@@ -328,6 +329,13 @@ extern "C"
     } cb_slam_options;
     int cb_slam_start(cb_t *, const cb_slam_options *);
     int cb_slam_stop(cb_t *);
+    /* Set defaults while idle, or switch processing during a run without
+       resetting VIO or discarding the map. Disabling the backend also disables
+       dense reconstruction. Re-enabling resumes the retained backend/map.
+       Completion and applied backend_enabled/dense_reconstruction flags are
+       reported asynchronously in SLAM JSON. USB IMU policy also applies when
+       enabling dense reconstruction during a run; LOCAL IMU is unaffected. */
+    int cb_slam_set_processing(cb_t *, int backend_enabled, int dense_reconstruction);
     int cb_slam_refresh_maps(cb_t *);
     int cb_slam_subscribe(cb_t *, int preview, int map);
     /* USB: nonzero during dense SLAM, and enabling IMU returns -EBUSY.

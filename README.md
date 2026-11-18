@@ -108,7 +108,7 @@ macOS 的驱动捕获作用于整个复合 USB 设备。捕获期间，MTP、系
 | IMU | `cb_set_imu_output`、`CB_EVENT_IMU_BATCH`、`cb_decode_imu_batch` |
 | 深度和颜色 | `cb_set_disparity_enabled`、`cb_get_disparity` |
 | 投影和三维坐标 | `cb_set_disparity_config_ex`、`cb_disparity_to_point` |
-| SLAM | `cb_slam_start/stop`、`cb_slam_get_pose`、`cb_slam_poll_json` |
+| SLAM | `cb_slam_start/stop`、`cb_slam_set_processing`、`cb_slam_get_pose`、`cb_slam_poll_json` |
 | 相机标定 | `cb_calibration_command`、`cb_get_calibration_status`、`cb_get_calibration_preview`、`cb_request_calibration_report` |
 | 系统与终端 | `cb_request_metrics`、`cb_debug_open/read/write/close` |
 
@@ -190,11 +190,17 @@ YAML 中已有有效 IMU 噪声。`START_IMU` 需要连续静置至少 7200 秒�
 帧率、投影、焦距和天线属于全设备配置，修改会影响全部应用。
 
 同一时刻由一个 SDK 连接控制 SLAM 会话和地图增量同步。其他连接可继续使用相机、
-IMU 和深度；其 SLAM 会话在当前控制连接释放后重试。USB 后端在稠密 SLAM 启动时
+IMU 和深度；其 SLAM 会话在当前控制连接释放后重试。USB 后端在稠密 SLAM 开启时
 自动关闭本连接的 IMU 上传，运行期间开启请求返回 `-EBUSY`；停止或失败后解除限制，
 不自动恢复上传。LOCAL 后端没有此限制，可同时接收稠密地图和 IMU。算法内部 IMU
 持续运行，其他本地连接的 IMU 订阅不受 USB 策略影响。稀疏 SLAM 与独立深度预览
 可同时使用。
+
+`cb_slam_set_processing(camera, backend_enabled, dense_reconstruction)` 在空闲时设置
+下次启动的选项，在运行中切换处理模式。关闭后端时自动关闭稠密重建，前端位姿
+继续输出；再次开启后端会继续使用已有地图。调用成功表示命令已排队，完成结果
+及实际的 `backend_enabled`、`dense_reconstruction`、`processing_options_pending`
+由 SLAM JSON 返回。稠密重建仅处理开启后的新帧，不补算稀疏阶段未保存的深度。
 
 ## 从旧接口迁移
 

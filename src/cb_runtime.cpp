@@ -1335,6 +1335,13 @@ extern "C" int cb_slam_stop(cb_t *h)
 {
     return slam_command(h, [](CbSlam &s) { s.client().command("STOP"); });
 }
+extern "C" int cb_slam_set_processing(cb_t *h, int backend_enabled, int dense_reconstruction)
+{
+    return slam_command(h, [&](CbSlam &s)
+                        { s.client().command("SET_PROCESSING",
+                                             {{"backend_enabled", backend_enabled != 0},
+                                              {"dense_reconstruction", backend_enabled != 0 && dense_reconstruction != 0}}); });
+}
 extern "C" int cb_slam_refresh_maps(cb_t *h)
 {
     return slam_command(h, [](CbSlam &s) { s.client().refresh_maps(); });

@@ -150,7 +150,22 @@ void StereoServer::run()
         {
             pollfd p{*i, POLLIN | POLLRDHUP, 0};
             poll(&p, 1, 0);
-            if (p.revents & (POLLHUP | POLLRDHUP | POLLERR | POLLNVAL | POLLIN))
+            if (p.revents & POLLIN)
+            {
+                std::uint32_t request[3]{};
+                Reply response{};
+                const auto size = recv(*i, request, sizeof(request), MSG_TRUNC);
+                response.status = size != sizeof(request) || request[0] != stereo_magic ||
+                                          request[1] != stereo_version || request[2] > 1
+                                      ? -EINVAL
+                                  : peers.size() > 1 && bool(request[2]) != lease_dense
+                                      ? -EBUSY
+                                      : lease_(true, request[2] != 0);
+                if (!response.status)
+                    lease_dense = request[2] != 0;
+                (void)send(*i, &response, sizeof(response), MSG_NOSIGNAL);
+            }
+            if (p.revents & (POLLHUP | POLLRDHUP | POLLERR | POLLNVAL))
             {
                 close(*i);
                 i = peers.erase(i);
@@ -363,6 +378,20 @@ StereoClient::~StereoClient()
         munmap(mapping_, memory_size);
     close_fd(memory_);
     close_fd(socket_);
+}
+void StereoClient::setDense(bool dense)
+{
+    const std::uint32_t request[3]{stereo_magic, stereo_version, dense ? 1u : 0u};
+    if (send(socket_, request, sizeof(request), MSG_NOSIGNAL) != sizeof(request))
+        throw std::runtime_error("CAMERA_CONFIG_FAILED: cannot change depth demand");
+    pollfd p{socket_, POLLIN, 0};
+    Reply response{};
+    if (poll(&p, 1, 20000) <= 0 ||
+        recv(socket_, &response, sizeof(response), MSG_TRUNC) != sizeof(response))
+        throw std::runtime_error("CAMERA_CONFIG_FAILED: depth demand update timed out");
+    if (response.status)
+        throw std::runtime_error("CAMERA_CONFIG_FAILED: depth demand update rejected (" +
+                                 std::to_string(response.status) + ")");
 }
 bool StereoClient::read(StereoFrame &frame)
 {

@@ -214,6 +214,8 @@ struct MapSnapshot
 {
     std::uint64_t revision = 0;
     std::map<std::uint64_t, MapNode> nodes;
+    // A change replaces the displayed geometry through the existing wire reset.
+    std::uint64_t geometry_generation = 0;
 };
 enum class MapAction : std::uint8_t
 {

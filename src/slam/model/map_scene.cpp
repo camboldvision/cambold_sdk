@@ -13,6 +13,9 @@ void Scene::reset_map()
     map_nodes_.clear();
     map_changes_.clear();
     map_reset_pending_ = false;
+    state_["received_map_points"] = 0;
+    state_["received_keyframes"] = 0;
+    state_.erase("received_map_revision");
     state_.erase("map_sync_error");
 }
 std::optional<svio::Json> Scene::map_feedback()

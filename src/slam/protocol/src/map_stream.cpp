@@ -38,6 +38,8 @@ void Server::map(std::shared_ptr<const MapSnapshot> snapshot, std::uint64_t time
     std::lock_guard<std::mutex> lock(mutex_);
     if (snapshot == map_)
         return;
+    if (snapshot && map_ && snapshot->geometry_generation != map_->geometry_generation)
+        reset_map_sync();
     map_ = std::move(snapshot);
     map_time_ = timestamp;
 }

@@ -98,6 +98,8 @@ class StereoClient
     StereoClient(const StereoClient &) = delete;
     StereoClient &operator=(const StereoClient &) = delete;
     bool read(StereoFrame &frame);
+    // Change only inference demand, keeping the capture lease and geometry.
+    void setDense(bool dense);
 
   private:
     int socket_ = -1, memory_ = -1;

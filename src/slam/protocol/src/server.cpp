@@ -268,7 +268,7 @@ void Server::receive(const Frame &f)
                                 {"capabilities",
                                  {"pose", "imu_calibrated", "map_keyframes", "keyframe_poses",
                                   "features_left", "image_rectified_left", "dense_map",
-                                  "incremental_map_v1", "time_sync", "map_management"}}};
+                                  "incremental_map_v1", "time_sync", "map_management", "runtime_processing"}}};
             }
             auto result = hello_reply_;
             result.update(status_locked());
@@ -391,7 +391,8 @@ void Server::receive(const Frame &f)
         case Command:
         {
             const auto name = j.at("command").get<std::string>();
-            if (name != "START" && name != "STOP" && name != "RESET" && name != "MAP_LIST")
+            if (name != "START" && name != "STOP" && name != "RESET" && name != "MAP_LIST" &&
+                name != "SET_PROCESSING")
             {
                 queue_json(Error, {{"code", "UNSUPPORTED"}, {"message", "Unknown example command"}},
                            f.request_id);

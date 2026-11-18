@@ -38,7 +38,7 @@ class CbSlam
         ++generation_;
         inbox_.clear();
         bytes_ = 0;
-        dense_running_ = start_pending_ = false;
+        dense_running_ = start_pending_ = pending_processing_ = false;
         start_request_ = 0;
         start_operation_.clear();
         cv_.notify_all();
@@ -104,14 +104,25 @@ class CbSlam
         if (frame.type != svio::Command || frame.flags != svio::json_flag)
             return;
         const auto json = svio::parse_json(frame);
-        if (json.value("command", std::string()) != "START" ||
-            !json.value("args", svio::Json::object()).value("dense_reconstruction", true))
+        const auto command = json.value("command", std::string());
+        const auto args = json.value("args", svio::Json::object());
+        if ((command != "START" && command != "SET_PROCESSING") ||
+            !args.value("backend_enabled", true) || !args.value("dense_reconstruction", true))
             return;
+        // Setting idle defaults does not reserve USB bandwidth.
+        if (command == "SET_PROCESSING")
+        {
+            const auto state = client_.scene().snapshot().at("state").value("state", std::string());
+            if (state != "RUNNING" && state != "INITIALIZING" && state != "STARTING" &&
+                state != "CONFIGURING_CAMERA")
+                return;
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (start_pending_ && start_request_ == frame.request_id)
                 return; // Retry of the same idempotent command.
             start_pending_ = true;
+            pending_processing_ = command == "SET_PROCESSING";
             start_request_ = frame.request_id;
             start_operation_.clear();
         }
@@ -140,7 +151,7 @@ class CbSlam
                 const bool active = state == "CONFIGURING_CAMERA" || state == "STARTING" ||
                                     state == "INITIALIZING" || state == "RUNNING" || state == "STOPPING";
                 dense_running_ = active && json.value("dense_reconstruction", false);
-                if (active || state == "ERROR" || state == "WAITING_CALIBRATION")
+                if ((!pending_processing_ && active) || state == "ERROR" || state == "WAITING_CALIBRATION")
                     start_pending_ = false;
             }
             if (start_pending_ && frame.request_id == start_request_)
@@ -158,7 +169,8 @@ class CbSlam
                 if (status == "completed" || status == "failed")
                 {
                     start_pending_ = false;
-                    dense_running_ = status == "completed";
+                    if (status == "completed")
+                        dense_running_ = json.value("dense_reconstruction", !pending_processing_);
                 }
             }
             disable = !was_blocked && (dense_running_ || start_pending_);
@@ -251,7 +263,7 @@ class CbSlam
                     disable = true;
                     owner_.inbox_.clear();
                     owner_.bytes_ = 0;
-                    owner_.dense_running_ = owner_.start_pending_ = false;
+                    owner_.dense_running_ = owner_.start_pending_ = owner_.pending_processing_ = false;
                     owner_.start_request_ = 0;
                     owner_.start_operation_.clear();
                 }
@@ -289,6 +301,7 @@ class CbSlam
     std::size_t bytes_ = 0;
     std::uint64_t generation_ = 0;
     bool active_ = false, dense_running_ = false, start_pending_ = false;
+    bool pending_processing_ = false;
     std::uint32_t start_request_ = 0;
     std::string start_operation_;
     cambold::detail::Client client_;
