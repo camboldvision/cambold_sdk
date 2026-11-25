@@ -32,14 +32,18 @@ class Scene
     {
         svio::MapDelta first;
         std::vector<svio::DensePoint> points;
+        std::vector<svio::KeyframePose> poses;
     };
     std::optional<MapAssembly> map_assembly_;
     std::optional<svio::Json> map_feedback_;
     std::uint64_t map_sync_ = 0, map_sample_ = 0;
     std::size_t map_points_ = 0;
     std::map<std::uint64_t, std::size_t> map_nodes_;
+    std::map<std::uint64_t, svio::KeyframePose> map_poses_;
     std::map<std::uint64_t, svio::Json> map_changes_;
     bool map_reset_pending_ = false;
+    bool map_snapshot_stream_ = false;
+    std::uint64_t map_graph_revision_ = 0;
     struct KeyframeAssembly
     {
         std::uint64_t sample = 0, revision = 0, time = 0, started = 0;

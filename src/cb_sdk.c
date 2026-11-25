@@ -290,16 +290,34 @@ int cb_set_disparity_config_ex(cb_t *host, uint32_t mode, float focal, uint32_t 
             p[4 * j + i] = (uint8_t)(fields[j] >> (8 * i));
     return cb_internal_request(host, CB_STEREO_CONFIG_REQ, p, 16, id);
 }
+int cb_set_disparity_config_with_cy(cb_t *host, uint32_t mode, float focal,
+                                   uint32_t projection, float fov, float cy, uint64_t id)
+{
+    uint8_t p[20];
+    uint32_t fields[5];
+    if (!mode || !isfinite(focal) || focal <= 0 || projection > 1 ||
+        !isfinite(fov) || fov < 30 || fov > 180 || !isfinite(cy))
+        return -EINVAL;
+    fields[0] = mode;
+    memcpy(fields + 1, &focal, 4);
+    fields[2] = projection;
+    memcpy(fields + 3, &fov, 4);
+    memcpy(fields + 4, &cy, 4);
+    for (int j = 0; j < 5; ++j)
+        for (int i = 0; i < 4; ++i)
+            p[4 * j + i] = (uint8_t)(fields[j] >> (8 * i));
+    return cb_internal_request(host, CB_STEREO_CONFIG_REQ, p, sizeof(p), id);
+}
 int cb_decode_stereo_status(const uint8_t *p, size_t n, cb_stereo_status *out)
 {
     uint32_t count, version, stride, header;
     if (!p || !out || n < 25)
         return -EINVAL;
     version = read_u32_le(p);
-    if (version < 1 || version > 3)
+    if (version < 1 || version > 4)
         return -EINVAL;
-    stride = version == 3 ? 28u : version == 2 ? 24u : 20u;
-    header = version == 3 ? 32u : 24u;
+    stride = version >= 3 ? 28u : version == 2 ? 24u : 20u;
+    header = version == 4 ? 36u : version == 3 ? 32u : 24u;
     count = read_u32_le(p + 20);
     if (count > CB_MAX_STEREO_MODES || n < header + 1 + count * stride ||
         n > header + count * stride + 256 || p[n - 1] != 0)
@@ -310,11 +328,12 @@ int cb_decode_stereo_status(const uint8_t *p, size_t n, cb_stereo_status *out)
     out->mode_id = read_u32_le(p + 12);
     out->focal_px = read_float_le(p + 16);
     out->mode_count = count;
-    out->projection = version == 3 ? read_u32_le(p + 24) : 0;
-    out->vertical_fov_deg = version == 3 ? read_float_le(p + 28) : 180;
+    out->projection = version >= 3 ? read_u32_le(p + 24) : 0;
+    out->vertical_fov_deg = version >= 3 ? read_float_le(p + 28) : 180;
+    out->cy = version == 4 ? read_float_le(p + 32) : 0;
     if (!isfinite(out->focal_px) || out->focal_px <= 0 || out->projection > 1 ||
         !isfinite(out->vertical_fov_deg) || out->vertical_fov_deg < 30 ||
-        out->vertical_fov_deg > 180)
+        out->vertical_fov_deg > 180 || !isfinite(out->cy))
         return -EINVAL;
     for (uint32_t i = 0; i < count; ++i)
     {
@@ -326,13 +345,15 @@ int cb_decode_stereo_status(const uint8_t *p, size_t n, cb_stereo_status *out)
         d->network_width = read_u32_le(m + 12);
         d->network_height = read_u32_le(m + 16);
         d->max_fps = version >= 2 ? read_u32_le(m + 20) : 20u;
-        d->projection = version == 3 ? read_u32_le(m + 24) : 0;
+        d->projection = version >= 3 ? read_u32_le(m + 24) : 0;
         if (!d->id || !d->width || !d->height || d->width > CB_MAX_DISPARITY_WIDTH ||
             d->height > CB_MAX_DISPARITY_HEIGHT || d->network_width < d->width ||
             d->network_height < d->height || d->network_width > CB_MAX_DISPARITY_WIDTH ||
             d->network_height > CB_MAX_DISPARITY_HEIGHT || d->projection > 1 ||
             (d->max_fps != 20 && d->max_fps != 15 && d->max_fps != 10))
             return -EINVAL;
+        if (version < 4 && d->id == out->mode_id)
+            out->cy = (d->height - 1) * .5f;
     }
     memcpy(out->message, p + header + count * stride, n - header - count * stride);
     return 0;

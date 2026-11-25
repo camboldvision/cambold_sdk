@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <linux/falloc.h>
 #include <linux/memfd.h>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -167,7 +168,8 @@ int CameraIpcRings::create_owner(uint32_t rgb_slot_count, uint32_t jpeg_slot_cou
             close_all();
             return -errno;
         }
-        std::memset(ring->mapping, 0, ring->mapping_size);
+        // A new, extended memfd is zero-filled. Touch only its header so unused
+        // image capacity does not allocate tens of MiB of physical pages.
         ring->header = static_cast<camera_broker_ring_header *>(ring->mapping);
         ring->header->magic = CAMERA_BROKER_MAGIC;
         ring->header->version = CAMERA_BROKER_VERSION;
@@ -342,6 +344,39 @@ uint32_t CameraIpcRings::consumer_stream_mask() const
     return __atomic_load_n(&rings_[0]->header->consumer_stream_mask, __ATOMIC_ACQUIRE);
 }
 
+void CameraIpcRings::release_image_payloads()
+{
+    if (!valid_ || !writer_)
+        return;
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0)
+        return;
+    const size_t page = static_cast<size_t>(page_size);
+    for (uint32_t id : {CAMERA_BROKER_RING_LEFT_RGB, CAMERA_BROKER_RING_RIGHT_RGB,
+                        CAMERA_BROKER_RING_STEREO_JPEG})
+    {
+        Ring *ring = rings_[id];
+        if (!ring || !ring->header)
+            continue;
+        for (uint32_t i = 0; i < ring->header->slot_count; ++i)
+        {
+            const size_t offset = ring->header->header_size +
+                                  static_cast<size_t>(i) * ring->header->slot_size;
+            auto *slot = reinterpret_cast<camera_broker_ring_slot *>(
+                static_cast<uint8_t *>(ring->mapping) + offset);
+            // Readers validate this again after their copy, so an in-flight
+            // read cannot return reclaimed pixels as a valid frame.
+            __atomic_exchange_n(&slot->sequence, 0ULL, __ATOMIC_ACQ_REL);
+            const size_t first = (offset + sizeof(*slot) + page - 1) / page * page;
+            const size_t last = (offset + ring->header->slot_size) / page * page;
+            if (last > first && fallocate(ring->fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+                                         static_cast<off_t>(first),
+                                         static_cast<off_t>(last - first)) < 0)
+                log_errno(log_, "reclaim image payload");
+        }
+    }
+}
+
 static bool publish_record(CameraIpcRings::Ring *ring, int notify_fd, const void *payload,
                            size_t payload_size, uint32_t width, uint32_t height, uint32_t stride,
                            uint32_t format, uint32_t flags, uint64_t timestamp_ns,
@@ -393,6 +428,18 @@ bool CameraIpcRings::publish_rgb(int camera_index, const uint8_t *data, size_t b
         rings_[camera_index == 0 ? CAMERA_BROKER_RING_LEFT_RGB : CAMERA_BROKER_RING_RIGHT_RGB],
         notify_fd_, data, bytes, width, height, stride, CAMERA_BROKER_FORMAT_RGB24, 0, timestamp_ns,
         sequence_out);
+}
+
+bool CameraIpcRings::publish_preview(int camera_index, const uint8_t *data, size_t bytes,
+                                    uint32_t width, uint32_t height, uint32_t stride,
+                                    uint64_t timestamp_ns)
+{
+    if (!writer_ || camera_index < 0 || camera_index > 1)
+        return false;
+    return publish_record(
+        rings_[camera_index == 0 ? CAMERA_BROKER_RING_LEFT_RGB : CAMERA_BROKER_RING_RIGHT_RGB],
+        notify_fd_, data, bytes, width, height, stride, CAMERA_BROKER_FORMAT_NV12, 0, timestamp_ns,
+        nullptr);
 }
 
 bool CameraIpcRings::publish_jpeg(const uint8_t *data, size_t bytes, uint32_t width,
@@ -489,20 +536,40 @@ bool CameraIpcRings::read_latest(uint32_t ring_id, uint64_t *cursor, void *paylo
     return true;
 }
 
-bool CameraIpcRings::read_next(uint32_t ring_id, uint64_t *cursor, void *payload,
-                               size_t payload_capacity, CameraIpcRecord *record) const
+static uint64_t next_read_sequence(const CameraIpcRings::Ring *ring, uint64_t *cursor)
 {
-    if (!valid_ || !valid_ring_id(ring_id) || !rings_[ring_id] || !cursor)
-        return false;
-    Ring *ring = rings_[ring_id];
     const uint64_t newest = __atomic_load_n(&ring->header->write_sequence, __ATOMIC_ACQUIRE);
     if (newest == 0 || newest <= *cursor)
-        return false;
+        return 0;
     uint64_t next = *cursor + 1U;
     const uint64_t oldest =
         newest >= ring->header->slot_count ? newest - ring->header->slot_count + 1U : 1U;
     if (next < oldest)
         next = oldest;
+    // A stopped producer can discard image payloads without resetting the
+    // global sequence. Skip those invalid slots so restarting a stream does
+    // not stall readers behind the previous session's discarded frames.
+    for (; next <= newest; ++next)
+    {
+        const auto *slot = reinterpret_cast<const camera_broker_ring_slot *>(
+            static_cast<const uint8_t *>(ring->mapping) + ring->header->header_size +
+            static_cast<size_t>(next % ring->header->slot_count) * ring->header->slot_size);
+        if (__atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE) != 0)
+            return next;
+        *cursor = next;
+    }
+    return 0;
+}
+
+bool CameraIpcRings::read_next(uint32_t ring_id, uint64_t *cursor, void *payload,
+                               size_t payload_capacity, CameraIpcRecord *record) const
+{
+    if (!valid_ || !valid_ring_id(ring_id) || !rings_[ring_id] || !cursor || !payload || !record)
+        return false;
+    Ring *ring = rings_[ring_id];
+    const uint64_t next = next_read_sequence(ring, cursor);
+    if (!next)
+        return false;
     if (!read_ring_sequence(ring, next, payload, payload_capacity, record))
     {
         // The producer may have advanced while the caller was copying. Keep the
@@ -519,14 +586,9 @@ bool CameraIpcRings::read_next_metadata(uint32_t ring_id, uint64_t *cursor,
     if (!valid_ || !valid_ring_id(ring_id) || !rings_[ring_id] || !cursor || !record)
         return false;
     Ring *ring = rings_[ring_id];
-    const uint64_t newest = __atomic_load_n(&ring->header->write_sequence, __ATOMIC_ACQUIRE);
-    if (newest == 0 || newest <= *cursor)
+    const uint64_t next = next_read_sequence(ring, cursor);
+    if (!next)
         return false;
-    uint64_t next = *cursor + 1U;
-    const uint64_t oldest =
-        newest >= ring->header->slot_count ? newest - ring->header->slot_count + 1U : 1U;
-    if (next < oldest)
-        next = oldest;
     if (!read_ring_metadata(ring, next, record))
         return false;
     *cursor = next;

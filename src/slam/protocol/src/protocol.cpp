@@ -677,16 +677,23 @@ DenseCloud decode_dense_cloud(const Bytes &b)
 Bytes encode_map_delta(const MapDelta &d)
 {
     const auto action = unsigned(d.action);
+    const bool batch = d.action == MapAction::PoseBatch;
+    const bool graph = d.action == MapAction::Graph;
     require((d.context.stream == 9 || d.context.stream == 3) && d.sync && d.context.sample &&
-                action <= 3,
+                action <= 5,
             "Invalid map delta context");
-    require((d.action == MapAction::Reset ? d.id == 0 : d.id > 0) && d.pose.id == d.id,
+    require((d.action == MapAction::Reset || batch || graph ? d.id == 0 : d.id > 0) && d.pose.id == d.id,
             "Invalid map node ID");
-    require(d.total <= dense_point_limit && d.offset <= d.total && d.points.size() <= 250 &&
+    require(d.total <= (graph ? map_display_node_limit : dense_point_limit) && d.offset <= d.total && d.points.size() <= 250 &&
                 d.points.size() <= d.total - d.offset,
             "Invalid map delta size");
-    require(d.action == MapAction::Upsert ? (d.total == 0 || !d.points.empty())
-                                          : (!d.total && !d.offset && d.points.empty()),
+    require(graph ? (d.points.empty() && (d.total == 0 || !d.poses.empty()) &&
+                         d.poses.size() <= map_pose_batch_limit && d.poses.size() <= d.total - d.offset)
+                  : batch ? (!d.offset && d.points.empty() && !d.poses.empty() &&
+                         d.poses.size() <= map_pose_batch_limit && d.total == d.poses.size())
+                  : (d.poses.empty() && (d.action == MapAction::Upsert
+                         ? (d.total == 0 || !d.points.empty())
+                         : (!d.total && !d.offset && d.points.empty()))),
             "Invalid map action payload");
     Writer w;
     write_context(w, d.context);
@@ -722,6 +729,25 @@ Bytes encode_map_delta(const MapDelta &d)
             w.u8(c);
         w.u8(0);
     }
+    std::set<std::uint64_t> ids;
+    for (const auto &pose : d.poses)
+    {
+        require(pose.id && ids.insert(pose.id).second, "Invalid batch map node ID");
+        w.u64(pose.id);
+        for (float x : pose.position)
+        {
+            finite(x);
+            w.f32(x);
+        }
+        double length = 0;
+        for (float x : pose.quaternion)
+        {
+            finite(x);
+            length += x * x;
+            w.f32(x);
+        }
+        require(std::abs(length - 1) < 0.02, "Invalid batch map quaternion");
+    }
     return std::move(w.bytes);
 }
 MapDelta decode_map_delta(const Bytes &b)
@@ -733,7 +759,7 @@ MapDelta decode_map_delta(const Bytes &b)
     d.revision = r.u64();
     d.id = r.u64();
     const auto action = r.u8();
-    require(action <= 3 && r.u8() == 0 && r.u16() == 0, "Invalid map action");
+    require(action <= 5 && r.u8() == 0 && r.u16() == 0, "Invalid map action");
     d.action = MapAction(action);
     d.offset = r.u32();
     d.total = r.u32();
@@ -742,16 +768,35 @@ MapDelta decode_map_delta(const Bytes &b)
         x = r.f32();
     for (auto &x : d.pose.quaternion)
         x = r.f32();
-    require(r.remaining() % 16 == 0 && r.remaining() / 16 <= 250, "Invalid map point payload");
-    while (r.remaining())
+    if (d.action == MapAction::PoseBatch || d.action == MapAction::Graph)
     {
-        DensePoint p;
-        for (auto &x : p.xyz)
-            x = r.f32();
-        for (auto &c : p.rgb)
-            c = r.u8();
-        require(r.u8() == 0, "Invalid map reserved byte");
-        d.points.push_back(p);
+        require(r.remaining() % map_pose_wire_size == 0 &&
+                    r.remaining() / map_pose_wire_size <= map_pose_batch_limit,
+                "Invalid batch map payload");
+        while (r.remaining())
+        {
+            KeyframePose pose;
+            pose.id = r.u64();
+            for (auto &x : pose.position)
+                x = r.f32();
+            for (auto &x : pose.quaternion)
+                x = r.f32();
+            d.poses.push_back(pose);
+        }
+    }
+    else
+    {
+        require(r.remaining() % 16 == 0 && r.remaining() / 16 <= 250, "Invalid map point payload");
+        while (r.remaining())
+        {
+            DensePoint p;
+            for (auto &x : p.xyz)
+                x = r.f32();
+            for (auto &c : p.rgb)
+                c = r.u8();
+            require(r.u8() == 0, "Invalid map reserved byte");
+            d.points.push_back(p);
+        }
     }
     // Use the same validation for both directions, without normalizing poses:
     // chunk metadata must remain bit-identical throughout a transaction.

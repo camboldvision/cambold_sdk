@@ -45,6 +45,10 @@ extern "C"
         CAMERA_BROKER_STREAM_STEREO_NV12 = 1u << 4,
         CAMERA_BROKER_STREAM_LEFT_RGB = 1u << 5,
         CAMERA_BROKER_STREAM_RIGHT_RGB = 1u << 6,
+        /* Internal display consumers accept downscaled NV12 in the image
+         * rings. A full RGB subscriber always takes priority in that eye. */
+        CAMERA_BROKER_STREAM_LEFT_PREVIEW = 1u << 7,
+        CAMERA_BROKER_STREAM_RIGHT_PREVIEW = 1u << 8,
     };
 
     enum camera_broker_frame_format

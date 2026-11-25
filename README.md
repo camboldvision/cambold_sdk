@@ -108,7 +108,7 @@ macOS 的驱动捕获作用于整个复合 USB 设备。捕获期间，MTP、系
 | IMU | `cb_set_imu_output`、`CB_EVENT_IMU_BATCH`、`cb_decode_imu_batch` |
 | 深度和颜色 | `cb_set_disparity_enabled`、`cb_get_disparity` |
 | 投影和三维坐标 | `cb_set_disparity_config_ex`、`cb_disparity_to_point` |
-| SLAM | `cb_slam_start/stop`、`cb_slam_set_processing`、`cb_slam_get_pose`、`cb_slam_poll_json` |
+| SLAM | `cb_slam_start/stop`、`cb_slam_set_processing`、`cb_slam_set_elevator`、`cb_slam_get_pose`、`cb_slam_poll_json` |
 | 相机标定 | `cb_calibration_command`、`cb_get_calibration_status`、`cb_get_calibration_preview`、`cb_request_calibration_report` |
 | 系统与终端 | `cb_request_metrics`、`cb_debug_open/read/write/close` |
 
@@ -201,6 +201,12 @@ IMU 和深度；其 SLAM 会话在当前控制连接释放后重试。USB 后端
 继续输出；再次开启后端会继续使用已有地图。调用成功表示命令已排队，完成结果
 及实际的 `backend_enabled`、`dense_reconstruction`、`processing_options_pending`
 由 SLAM JSON 返回。稠密重建仅处理开启后的新帧，不补算稀疏阶段未保存的深度。
+
+电梯运动估计默认关闭，无配置文件开关。调用 `cb_slam_set_elevator(camera, 1)`
+开启，传入 `0` 关闭；空闲时设置下次启动的状态，运行中在帧边界生效，无需重启
+SLAM。关闭时保留已估计的世界位置与速度，并恢复普通定位和建图；再次开启会重新
+积累启停检测证据。调用返回 `0` 表示已排队，实际状态与切换进度通过 SLAM JSON 的
+`elevator_enabled`、`elevator_options_pending` 和操作完成结果确认。
 
 ## 从旧接口迁移
 

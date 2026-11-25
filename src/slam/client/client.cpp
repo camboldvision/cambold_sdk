@@ -70,7 +70,7 @@ void Client::refresh_maps()
 }
 void Client::subscribe(bool images, bool dense)
 {
-    enqueue(svio::Subscribe, subscriptions(images, dense, 2097152));
+    enqueue(svio::Subscribe, subscriptions(images, dense, 4194304));
 }
 svio::Json Client::poll()
 {
@@ -120,6 +120,7 @@ void Client::live(std::string port, TransportFactory factory)
                 pending.emplace(f.request_id, Pending{f, svio::monotonic_ns() + 1000000000ull, 0});
             };
             send(svio::Hello, {{"client", "cambold_slam_viewer"},
+                               {"capabilities", {"map_pose_batch_v1", "map_snapshot_v2"}},
                                {"client_nonce", nonce},
                                {"protocol", {{"major", 1}, {"min_minor", 0}, {"max_minor", 0}}},
                                {"max_payload_bytes", 4096}});
@@ -192,7 +193,7 @@ void Client::live(std::string port, TransportFactory factory)
                                 refresh_maps();
                             }
                             send(svio::Status, svio::Json::object());
-                            send(svio::Subscribe, subscriptions(false, false, 65536));
+                            send(svio::Subscribe, subscriptions(false, false, 4194304));
                         }
                         else if (session != received)
                             throw std::runtime_error("Unexpected session change");

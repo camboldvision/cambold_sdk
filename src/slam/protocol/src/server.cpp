@@ -89,6 +89,9 @@ void Server::clear_session()
     subscriptions_.clear();
     last_status_ = 0;
     reset_map_sync();
+    map_pose_batches_ = false;
+    map_snapshots_ = false;
+    map_session_visible_ = false;
     budget_ = 65536;
     tokens_ = 16384;
     last_tokens_ = monotonic_ns();
@@ -101,6 +104,10 @@ void Server::disconnect()
 void Server::state(Json values)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    const auto state = values.find("state");
+    if (state != values.end() && state->is_string() &&
+        (*state == "IDLE" || *state == "ERROR" || *state == "WAITING_CALIBRATION"))
+        run_active_ = false;
     state_.update(values);
 }
 void Server::descriptor(const std::string &section, Json values)
@@ -194,6 +201,8 @@ void Server::run(std::uint64_t id, std::uint32_t epoch, const std::string &reaso
     std::lock_guard<std::mutex> lock(mutex_);
     run_ = id;
     epoch_ = epoch;
+    run_active_ = true;
+    map_session_visible_ = session_ != 0;
     data_.clear();
     imu_.clear();
     map_.reset();
@@ -256,9 +265,19 @@ void Server::receive(const Frame &f)
             {
                 clear_session();
                 session_ = random_id();
+                // A stopped run's final display belongs to its existing viewer.
+                // Only an active run may restore its map to a new connection.
+                map_session_visible_ = run_active_;
                 nonce_ = nonce;
                 payload_limit_ =
                     std::clamp<std::size_t>(j.value("max_payload_bytes", 4096), 1024, 4096);
+                const auto capabilities = j.value("capabilities", Json::array());
+                if (!capabilities.is_array())
+                    throw std::runtime_error("Invalid client capabilities");
+                map_pose_batches_ = std::find(capabilities.begin(), capabilities.end(),
+                                               "map_pose_batch_v1") != capabilities.end();
+                map_snapshots_ = std::find(capabilities.begin(), capabilities.end(),
+                                          "map_snapshot_v2") != capabilities.end();
                 hello_reply_ = {{"client_nonce", nonce_},
                                 {"session_id", id_string(session_)},
                                 {"device_boot_id", boot_},
@@ -268,7 +287,7 @@ void Server::receive(const Frame &f)
                                 {"capabilities",
                                  {"pose", "imu_calibrated", "map_keyframes", "keyframe_poses",
                                   "features_left", "image_rectified_left", "dense_map",
-                                  "incremental_map_v1", "time_sync", "map_management", "runtime_processing"}}};
+                                  "incremental_map_v1", "map_pose_batch_v1", "map_snapshot_v2", "time_sync", "map_management", "runtime_processing", "runtime_elevator"}}};
             }
             auto result = hello_reply_;
             result.update(status_locked());
@@ -392,7 +411,7 @@ void Server::receive(const Frame &f)
         {
             const auto name = j.at("command").get<std::string>();
             if (name != "START" && name != "STOP" && name != "RESET" && name != "MAP_LIST" &&
-                name != "SET_PROCESSING")
+                name != "SET_PROCESSING" && name != "SET_ELEVATOR")
             {
                 queue_json(Error, {{"code", "UNSUPPORTED"}, {"message", "Unknown example command"}},
                            f.request_id);

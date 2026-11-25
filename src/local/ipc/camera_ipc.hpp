@@ -52,9 +52,15 @@ class CameraIpcRings
     void set_consumer_stream_mask(uint32_t stream_mask);
     uint32_t consumer_stream_mask() const;
 
+    // Producer only, after all image writers have stopped. Keep the ring ABI
+    // and monotonically increasing sequences, but reclaim resident pixels.
+    void release_image_payloads();
+
     bool publish_rgb(int camera_index, const uint8_t *data, size_t bytes, uint32_t width,
                      uint32_t height, uint32_t stride, uint64_t timestamp_ns,
                      uint64_t *sequence_out);
+    bool publish_preview(int camera_index, const uint8_t *data, size_t bytes, uint32_t width,
+                         uint32_t height, uint32_t stride, uint64_t timestamp_ns);
     bool publish_jpeg(const uint8_t *data, size_t bytes, uint32_t width, uint32_t height,
                       uint64_t timestamp_ns, uint64_t *sequence_out);
     bool publish_imu(const camera_broker_imu_sample &sample, uint64_t *sequence_out);

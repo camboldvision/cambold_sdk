@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -50,6 +51,7 @@ struct StereoSettings
 {
     std::uint32_t mode = 0, frame_rate = 0, projection = 0;
     float focal_px = 0, vertical_fov = 180;
+    float cy = std::numeric_limits<float>::quiet_NaN(); // NaN selects image centre.
 };
 struct StereoMode
 {

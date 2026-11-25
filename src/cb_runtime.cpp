@@ -549,7 +549,7 @@ class SdkImpl
         }
         uint64_t id = get64(p);
         uint32_t total = get32(p + 12), offset = get32(p + 16);
-        if (!id || total < 36 || total > 256 * 1024 || offset > total || n - 24 > total - offset ||
+        if (!id || total < 36 || offset > total || n - 24 > total - offset ||
             CbDisparityAssembler::crc32(p + 24, n - 24) != get32(p + 20))
         {
             calibration_bytes_.clear();
@@ -1345,6 +1345,11 @@ extern "C" int cb_slam_set_processing(cb_t *h, int backend_enabled, int dense_re
 extern "C" int cb_slam_refresh_maps(cb_t *h)
 {
     return slam_command(h, [](CbSlam &s) { s.client().refresh_maps(); });
+}
+extern "C" int cb_slam_set_elevator(cb_t *h, int enabled)
+{
+    return slam_command(h, [&](CbSlam &s)
+                        { s.client().command("SET_ELEVATOR", {{"enabled", enabled != 0}}); });
 }
 extern "C" int cb_slam_subscribe(cb_t *h, int preview, int map)
 {

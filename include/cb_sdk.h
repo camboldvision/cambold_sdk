@@ -226,6 +226,7 @@ extern "C"
         char message[256];
         uint32_t projection;
         float vertical_fov_deg;
+        float cy; /* Principal point Y in rectified output pixels; may lie outside the image. */
     } cb_stereo_status;
 /* Version 3 adds projection metadata; v2/v3 use binary16 pixel disparity. */
 #define CB_DISPARITY_FRAME_VERSION 3u
@@ -270,6 +271,11 @@ extern "C"
        Legacy set_disparity_config selects perspective and preserves its API. */
     int cb_set_disparity_config_ex(cb_t *, uint32_t mode_id, float focal_px, uint32_t projection,
                                    float vertical_fov_deg, uint64_t request_id);
+    /* Explicit output principal point. Legacy configuration APIs reset cy to
+       (output_height - 1) / 2. Configure while stereo/SLAM is disabled. */
+    int cb_set_disparity_config_with_cy(cb_t *, uint32_t mode_id, float focal_px,
+                                       uint32_t projection, float vertical_fov_deg,
+                                       float cy, uint64_t request_id);
     /* Reconstruct optical-camera XYZ metres from a disparity value in pixels.
        Cylindrical: rho=fx*B/d, X=(u-cx)*rho/fx, Y=rho*sin(theta),
        Z=rho*cos(theta), theta=(v-cy)/fy. Returns -EINVAL for invalid input. */
@@ -336,6 +342,12 @@ extern "C"
        reported asynchronously in SLAM JSON. USB IMU policy also applies when
        enabling dense reconstruction during a run; LOCAL IMU is unaffected. */
     int cb_slam_set_processing(cb_t *, int backend_enabled, int dense_reconstruction);
+    /* Elevator motion estimation is disabled by default. Set the idle default
+       or switch it during a run without restarting SLAM. Disabling composes
+       accumulated cabin motion into ordinary VIO and resumes mapping.
+       Completion, elevator_enabled and elevator_options_pending are reported
+       asynchronously in SLAM JSON; zero means queued, not completed. */
+    int cb_slam_set_elevator(cb_t *, int enabled);
     int cb_slam_refresh_maps(cb_t *);
     int cb_slam_subscribe(cb_t *, int preview, int map);
     /* USB: nonzero during dense SLAM, and enabling IMU returns -EBUSY.

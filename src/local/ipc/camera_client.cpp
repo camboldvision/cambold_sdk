@@ -73,7 +73,7 @@ extern "C" int camera_client_wait(camera_client_t *client, int timeout_ms)
     }
 }
 
-extern "C" int camera_client_read_latest_rgb(camera_client_t *client, int camera_index,
+extern "C" int camera_client_read_latest_image(camera_client_t *client, int camera_index,
                                              struct camera_client_frame *frame)
 {
     if (!client || !frame || camera_index < 0 || camera_index > 1)
@@ -94,6 +94,15 @@ extern "C" int camera_client_read_latest_rgb(camera_client_t *client, int camera
     frame->timestamp_monotonic_ns = client->record.timestamp_monotonic_ns;
     frame->flags = client->record.flags;
     return 0;
+}
+
+extern "C" int camera_client_read_latest_rgb(camera_client_t *client, int camera_index,
+                                             struct camera_client_frame *frame)
+{
+    const int result = camera_client_read_latest_image(client, camera_index, frame);
+    if (result)
+        return result;
+    return frame->format == CAMERA_BROKER_FORMAT_RGB24 ? 0 : -EAGAIN;
 }
 
 extern "C" int camera_client_read_next_imu(camera_client_t *client,

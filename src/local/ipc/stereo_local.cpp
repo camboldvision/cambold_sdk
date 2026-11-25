@@ -31,14 +31,16 @@ struct Reply
     std::uint32_t bytes;
     char message[128];
 };
+// Control v3 adds cy. Frame leases and shared-memory metadata remain v2.
+constexpr std::uint32_t control_version = 3;
 struct ControlRequest
 {
-    std::uint32_t magic = stereo_magic, version = stereo_version, operation = 1;
+    std::uint32_t magic = stereo_magic, version = control_version, operation = 1;
     StereoSettings settings;
 };
 struct ControlReply
 {
-    std::uint32_t magic = stereo_magic, version = stereo_version;
+    std::uint32_t magic = stereo_magic, version = control_version;
     std::int32_t status = 0;
     StereoConfiguration configuration;
     char message[256]{};
@@ -187,7 +189,9 @@ void StereoServer::run()
                 ControlRequest request{};
                 const auto bytes =
                     poll(&p, 1, 200) > 0 ? recv(peer, &request, sizeof(request), MSG_TRUNC) : -1;
-                if (request.magic != stereo_magic || request.version != stereo_version)
+                const bool frame_lease = bytes == sizeof(std::uint32_t) * 2 || bytes == sizeof(std::uint32_t) * 3;
+                if (request.magic != stereo_magic ||
+                    request.version != (frame_lease ? stereo_version : control_version))
                 {
                     close(peer);
                 }
@@ -304,7 +308,7 @@ StereoConfiguration stereo_configuration(const StereoSettings *desired, const st
             throw std::runtime_error("CAMERA_CONTROL_UNAVAILABLE: camera configuration timed out");
         ControlReply response;
         if (recv(fd, &response, sizeof(response), MSG_TRUNC) != sizeof(response) ||
-            response.magic != stereo_magic || response.version != stereo_version ||
+            response.magic != stereo_magic || response.version != control_version ||
             response.configuration.mode_count > response.configuration.modes.size())
             throw std::runtime_error("CAMERA_CONTROL_UNAVAILABLE: update stereo_imu_capture to "
                                      "enable automatic configuration");

@@ -222,9 +222,13 @@ enum class MapAction : std::uint8_t
     Reset = 0,
     Upsert = 1,
     Pose = 2,
-    Erase = 3
+    Erase = 3,
+    PoseBatch = 4,
+    Graph = 5 // Complete pose/membership snapshot; apply only after the last chunk.
 };
 constexpr std::size_t map_delta_header_size = 96;
+constexpr std::size_t map_pose_wire_size = 36;
+constexpr std::size_t map_pose_batch_limit = (4096 - map_delta_header_size) / map_pose_wire_size;
 constexpr std::size_t map_display_point_limit = 16 * 1024 * 1024, map_display_node_limit = 65536;
 struct MapDelta
 {
@@ -234,6 +238,7 @@ struct MapDelta
     std::uint32_t offset = 0, total = 0;
     KeyframePose pose;
     std::vector<DensePoint> points;
+    std::vector<KeyframePose> poses;
 };
 Bytes encode_map_delta(const MapDelta &);
 MapDelta decode_map_delta(const Bytes &);

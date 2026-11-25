@@ -80,21 +80,28 @@ class Server
         MapAction action = MapAction::Reset;
         std::uint64_t id = 0, revision = 0;
         MapNode node;
+        std::shared_ptr<const MapSnapshot> snapshot;
     };
     struct MapTransfer
     {
         MapUpdate update;
+        std::vector<MapUpdate> pose_updates;
+        std::vector<KeyframePose> graph_poses;
         Context context;
         std::size_t offset = 0;
+        std::size_t wire_bytes = 0;
         bool sent = false;
         std::uint64_t sent_at = 0, timestamp = 0;
     };
-    std::shared_ptr<const MapSnapshot> map_, planned_map_;
+    std::shared_ptr<const MapSnapshot> map_, planned_map_, planned_graph_;
     std::map<std::uint64_t, MapNode> map_known_;
     std::deque<MapUpdate> map_updates_;
-    std::optional<MapTransfer> map_transfer_;
+    std::deque<MapTransfer> map_transfers_;
     std::uint64_t map_sync_ = 0, map_sequence_ = 0, map_time_ = 0;
     bool map_reset_ = true, map_paused_ = false;
+    bool map_pose_batches_ = false;
+    bool map_snapshots_ = false;
+    bool run_active_ = false, map_session_visible_ = false;
     Json status_locked() const;
     mutable std::mutex mutex_;
     std::function<void(const CommandTask &)> command_;
