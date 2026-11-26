@@ -40,10 +40,7 @@ extern "C"
         CB_DEVICE_CONFIG_EVT = 0x0026,
         CB_SYSTEM_METRICS_REQ = 0x0030,
         CB_SYSTEM_METRICS_EVT = 0x0031,
-        CB_ANTENNA_GET_REQ = 0x0040,
-        CB_ANTENNA_SET_REQ = 0x0041,
-        CB_ANTENNA_STATUS_EVT = 0x0042,
-        /* 0x0050..0x0052 are reserved for retired commands. */
+        /* 0x0040..0x0042 and 0x0050..0x0052 are reserved for retired commands. */
         CB_DEVICE_INFO_REQ = 0x0060,
         CB_RESET_REQ = 0x0061,
         CB_TERMINAL_SIZE_SET_REQ = 0x0062,

@@ -701,21 +701,6 @@ class SdkImpl
                  std::string((const char *)payload, size));
             return;
         }
-        if (type == CB_ANTENNA_STATUS_EVT)
-        {
-            const int wired = size > 0 && payload[0] != 0;
-            const int32_t result = size >= 6 ? (int32_t)get32(payload + 2) : 0;
-            cb_event event{};
-            event.type = CB_EVENT_ANTENNA;
-            event.request_id = request_id;
-            event.result = result;
-            event.antenna_wired = wired;
-            event.payload = payload;
-            event.payload_size = size;
-            if (callback_)
-                callback_(&event, user_);
-            return;
-        }
         if (type == CB_IMU_STREAM_STATUS_EVT)
         {
             cb_event event{};

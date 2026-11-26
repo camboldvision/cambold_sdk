@@ -28,7 +28,6 @@ extern "C"
         CB_EVENT_DISCONNECTED = 2,
         CB_EVENT_RESULT = 3,
         CB_EVENT_METRICS = 4,
-        CB_EVENT_ANTENNA = 5,
         CB_EVENT_IMU_STATUS = 7,
         CB_EVENT_STREAM_STATUS = 8,
         CB_EVENT_ERROR = 9,
@@ -47,7 +46,6 @@ extern "C"
         enum cb_event_type type;
         uint64_t request_id;
         int32_t result;
-        int32_t antenna_wired;
         int32_t enabled;
         const uint8_t *payload;
         size_t payload_size;
@@ -140,15 +138,13 @@ extern "C"
     enum cb_device_config_flags
     {
         CB_CONFIG_FRAME_RATE_VALID = 1u,
-        CB_CONFIG_IMU_VALID = 2u,
-        CB_CONFIG_ANTENNA_VALID = 4u
+        CB_CONFIG_IMU_VALID = 2u
     };
     typedef struct cb_device_config
     {
         uint32_t valid_flags;
         uint32_t frame_rate;
         uint32_t imu_output_enabled;
-        uint32_t antenna_wired;
         uint32_t frame_rate_count;
         uint32_t frame_rates[CB_MAX_FRAME_RATES];
     } cb_device_config;
@@ -402,8 +398,6 @@ extern "C"
     int cb_request_device_config(cb_t *host, uint64_t request_id);
     int cb_decode_device_config(const uint8_t *payload, size_t payload_size,
                                 cb_device_config *out_config);
-    int cb_get_antenna(cb_t *host, uint64_t request_id);
-    int cb_set_antenna(cb_t *host, int wired, uint64_t request_id);
     int cb_set_imu_output(cb_t *host, int enable, uint64_t request_id);
     int cb_set_frame_rate(cb_t *host, uint32_t fps, uint64_t request_id);
     /* Update the debug terminal size. USB sends the request to ttyGS0 on the

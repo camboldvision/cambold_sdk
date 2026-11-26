@@ -57,6 +57,17 @@ endif()
 if(CB_SDK_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
+# Explicit regression target; excluded from normal SDK/viewer builds.
+add_executable(cambold_slam_map_stream_test EXCLUDE_FROM_ALL tests/slam_map_stream_test.cpp
+    src/slam/model/scene.cpp src/slam/model/map_scene.cpp)
+set_target_properties(cambold_slam_map_stream_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/tests")
+foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+    set_target_properties(cambold_slam_map_stream_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_${config} "${CMAKE_CURRENT_BINARY_DIR}/tests")
+endforeach()
+target_include_directories(cambold_slam_map_stream_test PRIVATE src/slam/model)
+target_link_libraries(cambold_slam_map_stream_test PRIVATE cambold_slam_protocol Threads::Threads)
 install(TARGETS cb_sdk cambold_slam_protocol EXPORT CamBoldSDKTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 get_target_property(_cb_json_imported nlohmann_json::nlohmann_json IMPORTED)

@@ -48,17 +48,6 @@ int cb_request_device_config(cb_t *host, uint64_t request_id)
     return send_empty(host, CB_DEVICE_CONFIG_REQ, request_id);
 }
 
-int cb_get_antenna(cb_t *host, uint64_t request_id)
-{
-    return send_empty(host, CB_ANTENNA_GET_REQ, request_id);
-}
-
-int cb_set_antenna(cb_t *host, int wired, uint64_t request_id)
-{
-    const uint8_t value = wired ? 1u : 0u;
-    return cb_internal_request(host, CB_ANTENNA_SET_REQ, &value, sizeof(value), request_id);
-}
-
 int cb_set_imu_output(cb_t *host, int enable, uint64_t request_id)
 {
     const uint8_t value = enable ? 1u : 0u;
@@ -156,12 +145,13 @@ int cb_decode_device_config(const uint8_t *payload, size_t payload_size,
     if (count > CB_MAX_FRAME_RATES || payload_size != 24u + count * 4u)
         return -EINVAL;
     memset(out_config, 0, sizeof(*out_config));
-    out_config->valid_flags = read_u32_le(payload + 4);
+    out_config->valid_flags = read_u32_le(payload + 4) &
+                              (CB_CONFIG_FRAME_RATE_VALID | CB_CONFIG_IMU_VALID);
     out_config->frame_rate = read_u32_le(payload + 8);
     out_config->imu_output_enabled = read_u32_le(payload + 12);
-    out_config->antenna_wired = read_u32_le(payload + 16);
     out_config->frame_rate_count = count;
-    if (out_config->imu_output_enabled > 1 || out_config->antenna_wired > 1 ||
+    /* Offset 16 is reserved in the version-1 wire payload. */
+    if (out_config->imu_output_enabled > 1 ||
         ((out_config->valid_flags & CB_CONFIG_FRAME_RATE_VALID) && out_config->frame_rate == 0))
         return -EINVAL;
     for (i = 0; i < count; ++i)
